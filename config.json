@@ -1,0 +1,12 @@
+{
+  "modus": "🔴 Live-Echtzeit (Jetzt)",
+  "auto_refresh": true,
+  "refresh_interval_sec": 15,
+  "sound_alarm": true,
+  "sound_warn_sec": 5,
+  "lead_dep": 240,
+  "lag_dep": 90,
+  "lead_arr": 160,
+  "lag_arr": 40,
+  "min_gap": 30
+}
