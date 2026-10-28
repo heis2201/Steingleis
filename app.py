@@ -3,6 +3,7 @@ import json
 import os
 import re
 import urllib.parse
+from zoneinfo import ZoneInfo
 from typing import List, Tuple, Dict, Any
 import requests
 import streamlit as st
@@ -10,9 +11,16 @@ import pandas as pd
 import altair as alt
 
 # ---------------------------------------------------------
-# SEITEN-KONFIGURATION & GLOBALE WERTE
+# SEITEN-KONFIGURATION & ZEITZONE
 # ---------------------------------------------------------
 st.set_page_config(page_title="BÜ Steingleis Monitor", page_icon="🚦", layout="wide")
+
+# Zwingend für Streamlit Cloud: UTC-Serverzeit auf deutsche Zeit umrechnen
+BERLIN_TZ = ZoneInfo("Europe/Berlin")
+
+def get_german_now() -> datetime.datetime:
+    """Liefert die exakte deutsche Ortszeit als naive datetime (für korrekte Berechnungen)."""
+    return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
 CONFIG_FILE = "config.json"
 STATION_NAME = "Neustadt(Weinstr)Hbf"
@@ -64,15 +72,47 @@ else:
             return f
         return wrapper
 
-# Saubere Einbettung: height mindestens 1 für st.iframe
-def render_iframe(html_code: str, height: int = 1):
-    eff_height = 1 if (isinstance(height, int) and height < 1) else height
-    if hasattr(st, "iframe"):
-        st.iframe(html_code, height=eff_height)
+# ---------------------------------------------------------
+# CLOUD-SICHERER AUDIO-ALARM
+# ---------------------------------------------------------
+def play_sound_cloud():
+    """Führt die Web Audio API isoliert aus, ohne Cross-Origin-Sicherheitsregeln zu verletzen."""
+    js_code = """
+    <script>
+    (function() {
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            const strikeInterval = 0.55;
+            for (let i = 0; i < 4; i++) {
+                const strikeTime = ctx.currentTime + (i * strikeInterval);
+                [800, 1150, 1900].forEach((freq, idx) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = idx === 0 ? 'sine' : 'triangle';
+                    osc.frequency.setValueAtTime(freq, strikeTime);
+                    const baseVol = idx === 0 ? 0.35 : 0.12;
+                    gain.gain.setValueAtTime(baseVol, strikeTime);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, strikeTime + 0.42);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(strikeTime);
+                    osc.stop(strikeTime + 0.45);
+                });
+            }
+        } catch(e) {}
+    })();
+    </script>
+    """
+    if hasattr(st, "html"):
+        st.html(js_code)
     else:
-        import streamlit.components.v1 as components
-        components.html(html_code, height=height)
+        st.markdown(js_code, unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# HILFSFUNKTIONEN & FILTER
+# ---------------------------------------------------------
 def is_fernverkehr(tr: dict) -> bool:
     raw = (tr.get("train") or tr.get("line") or "").strip().upper()
     return any(raw.startswith(prefix) for prefix in ["ICE", "TGV", "IC", "EC", "ECE"])
@@ -108,7 +148,7 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
         return None
 
     h, m = int(match.group(1)), int(match.group(2))
-    ref = reference_dt or datetime.datetime.now()
+    ref = reference_dt or get_german_now()
     dt = ref.replace(hour=h, minute=m, second=0, microsecond=0)
 
     if delay_min:
@@ -125,7 +165,7 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
     return dt
 
 def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], str]:
-    headers = {"User-Agent": "Streamlit-Steingleis-Monitor"}
+    headers = {"User-Agent": "Streamlit-Steingleis-Monitor-Cloud"}
     safe_station = urllib.parse.quote(station_name)
     url = f"https://dbf.finalrewind.org/{safe_station}.json?version=3"
     if mode == "arr":
@@ -166,7 +206,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
     dep_data, _ = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime)
     arr_data, _ = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime)
 
-    # 1. Abfahrten ab Neustadt
+    # 1. Abfahrten ab Neustadt (nach Westen)
     for tr in dep_data:
         if tr.get("is_cancelled") or tr.get("isCancelled"):
             continue
@@ -216,7 +256,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
                         "_start_dt": start
                     })
 
-    # 2. Ankünfte in Neustadt
+    # 2. Ankünfte in Neustadt (aus Westen)
     kombinierte_ankuenfte = arr_data + dep_data
     for tr in kombinierte_ankuenfte:
         if tr.get("is_cancelled") or tr.get("isCancelled"):
@@ -268,6 +308,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
         ma_dep_data = fetch_cached_neighbor_board("Mannheim Hbf")
         kl_dep_data = fetch_cached_neighbor_board("Kaiserslautern Hbf")
 
+        # 3.1 Mannheim -> West
         for tr in ma_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
                 continue
@@ -313,6 +354,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
                         "_start_dt": start
                     })
 
+        # 3.2 Kaiserslautern -> Ost
         for tr in kl_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
                 continue
@@ -423,79 +465,6 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
     return pd.DataFrame(events)
 
 # ---------------------------------------------------------
-# SOUND-ENGINE & LIVE-UHR (CLIENTSEITIG IN JAVASCRIPT)
-# ---------------------------------------------------------
-render_iframe(
-    """
-    <script>
-    const parentDoc = window.parent.document;
-
-    window.parent.playBUEBell = function(durationSec = 2.5) {
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContext) return;
-            const ctx = new AudioContext();
-            const strikeInterval = 0.55;
-            const strikes = Math.floor(durationSec / strikeInterval);
-
-            for (let i = 0; i < strikes; i++) {
-                const strikeTime = ctx.currentTime + (i * strikeInterval);
-                [800, 1150, 1900].forEach((freq, idx) => {
-                    const osc = ctx.createOscillator();
-                    const gain = ctx.createGain();
-                    osc.type = idx === 0 ? 'sine' : 'triangle';
-                    osc.frequency.setValueAtTime(freq, strikeTime);
-
-                    const baseVol = idx === 0 ? 0.35 : 0.12;
-                    gain.gain.setValueAtTime(baseVol, strikeTime);
-                    gain.gain.exponentialRampToValueAtTime(0.0001, strikeTime + 0.42);
-
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    osc.start(strikeTime);
-                    osc.stop(strikeTime + 0.45);
-                });
-            }
-        } catch(e) {}
-    };
-
-    let clockBadge = parentDoc.getElementById('steingleis-live-clock');
-    if (!clockBadge) {
-        clockBadge = parentDoc.createElement('div');
-        clockBadge.id = 'steingleis-live-clock';
-        clockBadge.style.position = 'fixed';
-        clockBadge.style.bottom = '16px';
-        clockBadge.style.left = '16px';
-        clockBadge.style.backgroundColor = 'rgba(15, 23, 42, 0.85)';
-        clockBadge.style.color = '#38bdf8';
-        clockBadge.style.padding = '6px 12px';
-        clockBadge.style.borderRadius = '8px';
-        clockBadge.style.fontFamily = 'ui-monospace, monospace';
-        clockBadge.style.fontSize = '13px';
-        clockBadge.style.fontWeight = 'bold';
-        clockBadge.style.zIndex = '999999';
-        clockBadge.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
-        clockBadge.style.border = '1px solid rgba(255,255,255,0.15)';
-        clockBadge.style.backdropFilter = 'blur(6px)';
-        clockBadge.style.pointerEvents = 'none';
-        clockBadge.innerHTML = '🕒 <span id="steingleis-clock-text">--:--:--</span>';
-        parentDoc.body.appendChild(clockBadge);
-    }
-
-    function tickClock() {
-        const el = parentDoc.getElementById('steingleis-clock-text');
-        if (el) el.innerText = new Date().toLocaleTimeString('de-DE');
-    }
-    if (!window.parent.steingleisClockInterval) {
-        window.parent.steingleisClockInterval = setInterval(tickClock, 1000);
-    }
-    tickClock();
-    </script>
-    """,
-    height=1
-)
-
-# ---------------------------------------------------------
 # SEITEN-NAVIGATION (SIDEBAR)
 # ---------------------------------------------------------
 with st.sidebar:
@@ -510,7 +479,7 @@ if active_page == "🚦 Monitor":
     with st.sidebar:
         st.subheader("Modus & Zeit")
         modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
-        now_real = datetime.datetime.now()
+        now_german = get_german_now()
 
         if modus == "🔴 Live-Echtzeit (Jetzt)":
             use_realtime = True
@@ -523,7 +492,9 @@ if active_page == "🚦 Monitor":
             use_realtime = False
             auto_refresh = False
             st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
-            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_real.time())
+            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_german.time())
+
+        st.caption(f"🕒 Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
 
         if st.button("🔄 Jetzt aktualisieren", width="stretch"):
             st.rerun()
@@ -532,7 +503,8 @@ if active_page == "🚦 Monitor":
 
     @fragment_dec(run_every=refresh_interval)
     def render_live_dashboard():
-        current_time_tick = datetime.datetime.now()
+        current_time_tick = get_german_now()
+        
         if use_realtime:
             calc_base_dt = current_time_tick
         else:
@@ -563,7 +535,7 @@ if active_page == "🚦 Monitor":
                 if next_closure is None or start < next_closure[0]:
                     next_closure = (start, end, trains)
 
-        # Akustischer Alarm
+        # Akustischer Alarm (cloud-sicher)
         if use_realtime and st.session_state.cfg.get("sound_alarm", True):
             sound_warn_sec = int(st.session_state.cfg.get("sound_warn_sec", 45))
             should_alarm = False
@@ -577,15 +549,16 @@ if active_page == "🚦 Monitor":
                     should_alarm = True
 
             if should_alarm:
-                render_iframe("<script>if(window.parent.playBUEBell){ window.parent.playBUEBell(2.5); }</script>", height=1)
+                play_sound_cloud()
 
         # Statuskacheln
         st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
+        st.caption(f"🕒 Aktuelle Uhrzeit (MEZ/MESZ): **{current_time_tick.strftime('%H:%M:%S')} Uhr**")
         col1, col2 = st.columns([1, 1])
 
         with col1:
             sub_title = (
-                f"Live-Status (Stand: {current_time_tick.strftime('%H:%M:%S')} Uhr)" 
+                f"Live-Status (Jetzt)" 
                 if use_realtime 
                 else f"Status um {calc_base_dt.strftime('%H:%M')} Uhr (Plan)"
             )
@@ -606,8 +579,8 @@ if active_page == "🚦 Monitor":
                     s_next, e_next, tr_next = next_closure
                     diff_sec = int((s_next - calc_base_dt).total_seconds())
                     st.metric("Nächste Schließung um", 
-                              s_next.strftime("%H:%M:%S"), 
-                              f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
+                          s_next.strftime("%H:%M:%S"), 
+                          f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
                     st.caption(f"Erster Zug: {tr_next[0]}")
                 else:
                     st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
@@ -751,7 +724,7 @@ elif active_page == "⚙️ Einstellungen":
                 "Vorwarnzeit vor Schließung (Sek.)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5
             )
             if st.button("🔊 Signalton jetzt testen"):
-                render_iframe("<script>if(window.parent.playBUEBell) { window.parent.playBUEBell(3.0); }</script>", height=1)
+                play_sound_cloud()
 
         with col_ref:
             cfg["refresh_interval_sec"] = st.slider(
