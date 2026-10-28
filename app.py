@@ -11,9 +11,15 @@ import pandas as pd
 import altair as alt
 
 # ---------------------------------------------------------
-# SEITEN-KONFIGURATION & ZEITZONE
+# ANWENDUNGS-VERSION & KONFIGURATION
 # ---------------------------------------------------------
-st.set_page_config(page_title="BÜ Steingleis Monitor", page_icon="🚦", layout="wide")
+APP_VERSION = "0.1"
+
+st.set_page_config(
+    page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
+    page_icon="🚦",
+    layout="wide"
+)
 
 # Zwingend für Streamlit Cloud: UTC-Serverzeit auf deutsche Zeit umrechnen
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
@@ -469,6 +475,7 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("🚦 BÜ Steingleis")
+    st.caption(f"App-Version {APP_VERSION}")
     active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
 
@@ -552,7 +559,7 @@ if active_page == "🚦 Monitor":
                 play_sound_cloud()
 
         # Statuskacheln
-        st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
+        st.title(f"🚦 BÜ Steingleis (Neustadt/Weinstraße) v{APP_VERSION}")
         st.caption(f"🕒 Aktuelle Uhrzeit (MEZ/MESZ): **{current_time_tick.strftime('%H:%M:%S')} Uhr**")
         col1, col2 = st.columns([1, 1])
 
@@ -579,8 +586,8 @@ if active_page == "🚦 Monitor":
                     s_next, e_next, tr_next = next_closure
                     diff_sec = int((s_next - calc_base_dt).total_seconds())
                     st.metric("Nächste Schließung um", 
-                          s_next.strftime("%H:%M:%S"), 
-                          f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
+                              s_next.strftime("%H:%M:%S"), 
+                              f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
                     st.caption(f"Erster Zug: {tr_next[0]}")
                 else:
                     st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
@@ -662,7 +669,7 @@ if active_page == "🚦 Monitor":
 # =========================================================
 elif active_page == "⚙️ Einstellungen":
     st.title("⚙️ Einstellungen & Parameter")
-    st.caption("Konfiguration des Stellwerksmodells, der Durchfahrten und der Signale. Änderungen wirken sofort.")
+    st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells, der Durchfahrten und der Signale. Änderungen wirken sofort.")
 
     cfg = st.session_state.cfg
 
