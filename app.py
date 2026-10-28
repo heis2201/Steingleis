@@ -16,7 +16,7 @@ import altair as alt
 APP_VERSION = "0.1"
 
 st.set_page_config(
-    page_title=f"BÜ Steingleis Monitor",
+    page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
     page_icon="🚦",
     layout="wide"
 )
@@ -559,7 +559,7 @@ if active_page == "🚦 Monitor":
                 play_sound_cloud()
 
         # Statuskacheln
-        st.title(f"🚦 BÜ Steingleis (Neustadt/Weinstraße) v{APP_VERSION}")
+        st.title(f"🚦 BÜ Steingleis (Neustadt/Weinstraße)")
         st.caption(f"🕒 Aktuelle Uhrzeit (MEZ/MESZ): **{current_time_tick.strftime('%H:%M:%S')} Uhr**")
         col1, col2 = st.columns([1, 1])
 
