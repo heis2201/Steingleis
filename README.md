@@ -25,7 +25,7 @@ Voraussetzung: Python 3.9 oder höher.
 
 ```bash
 # Repository klonen
-git clone [https://github.com/heis2201/Steingleis.git](https://github.com/heis2201/Steingleis.git)
+git clone https://github.com/heis2201/Steingleis.git
 cd Steingleis
 
 # Abhängigkeiten installieren
