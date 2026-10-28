@@ -2,28 +2,28 @@ import datetime
 import json
 import os
 import re
+import urllib.parse
 from typing import List, Tuple, Dict, Any
 import requests
 import streamlit as st
 import pandas as pd
 import altair as alt
-import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
-# SEITEN-KONFIGURATION
+# SEITEN-KONFIGURATION & GLOBALE WERTE
 # ---------------------------------------------------------
 st.set_page_config(page_title="BÜ Steingleis Monitor", page_icon="🚦", layout="wide")
 
 CONFIG_FILE = "config.json"
 STATION_NAME = "Neustadt(Weinstr)Hbf"
-API_BASE = f"https://dbf.finalrewind.org/{STATION_NAME}.json?version=3"
 
 DEFAULT_CONFIG = {
-    "modus": "🔴 Live-Echtzeit (Jetzt)",
-    "auto_refresh": True,
     "refresh_interval_sec": 15,
     "sound_alarm": True,
     "sound_warn_sec": 45,
+    "track_through_trains": True,
+    "transit_ma_min": 16,
+    "transit_kl_min": 19,
     "lead_dep": 240,
     "lag_dep": 90,
     "lead_arr": 160,
@@ -41,7 +41,8 @@ def load_config() -> dict:
             return DEFAULT_CONFIG
     return DEFAULT_CONFIG
 
-cfg = load_config()
+if "cfg" not in st.session_state:
+    st.session_state.cfg = load_config()
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -49,6 +50,9 @@ WEST_CORRIDOR_KEYWORDS = [
     "st. ingbert", "saarlouis", "merzig", "trier", "koblenz", "paris",
     "kusel", "pirmasens"
 ]
+
+WEST_BOUND_DESTS = ["kaiserslautern", "saarbrücken", "saarbruecken", "paris", "homburg", "landstuhl"]
+EAST_BOUND_DESTS = ["mannheim", "ludwigshafen", "frankfurt", "heidelberg", "stuttgart", "münchen", "muenchen", "berlin"]
 
 if hasattr(st, "fragment"):
     fragment_dec = st.fragment
@@ -60,17 +64,32 @@ else:
             return f
         return wrapper
 
-def check_corridor_match(item) -> bool:
-    if not item:
-        return False
-    if isinstance(item, str):
-        target = item.lower()
-        return any(kw in target for kw in WEST_CORRIDOR_KEYWORDS)
-    if isinstance(item, list):
-        return any(check_corridor_match(x) for x in item)
-    if isinstance(item, dict):
-        return any(check_corridor_match(v) for v in item.values())
-    return False
+# Saubere Einbettung: height mindestens 1 für st.iframe
+def render_iframe(html_code: str, height: int = 1):
+    eff_height = 1 if (isinstance(height, int) and height < 1) else height
+    if hasattr(st, "iframe"):
+        st.iframe(html_code, height=eff_height)
+    else:
+        import streamlit.components.v1 as components
+        components.html(html_code, height=height)
+
+def is_fernverkehr(tr: dict) -> bool:
+    raw = (tr.get("train") or tr.get("line") or "").strip().upper()
+    return any(raw.startswith(prefix) for prefix in ["ICE", "TGV", "IC", "EC", "ECE"])
+
+def clean_train_name(tr: dict) -> str:
+    raw = tr.get("line") or tr.get("train") or ""
+    raw = str(raw).strip()
+
+    m_dup = re.match(r'^(?:RE|RB|S|MEX|SWE|HLB)\s+((?:S|RE|RB)\s*\d+.*)$', raw, re.IGNORECASE)
+    if m_dup:
+        return re.sub(r'^(S|RE|RB)\s+(\d+)', r'\1\2', m_dup.group(1).strip())
+
+    m_simple = re.match(r'^(S|RE|RB)\s+(\d+.*)$', raw, re.IGNORECASE)
+    if m_simple:
+        return f"{m_simple.group(1).upper()}{m_simple.group(2).strip()}"
+
+    return raw if raw else "Zug"
 
 def extract_station_names(route_list) -> List[str]:
     names = []
@@ -105,14 +124,17 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
 
     return dt
 
-def fetch_dbf_board(mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], str]:
+def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], str]:
     headers = {"User-Agent": "Streamlit-Steingleis-Monitor"}
-    url = f"{API_BASE}&mode={mode}" if mode == "arr" else API_BASE
+    safe_station = urllib.parse.quote(station_name)
+    url = f"https://dbf.finalrewind.org/{safe_station}.json?version=3"
+    if mode == "arr":
+        url += "&mode=arr"
     if not use_realtime:
         url += "&rt=0"
 
     try:
-        resp = requests.get(url, headers=headers, timeout=12)
+        resp = requests.get(url, headers=headers, timeout=6)
         resp.raise_for_status()
         data = resp.json()
         if "error" in data and data["error"]:
@@ -121,15 +143,30 @@ def fetch_dbf_board(mode: str = "dep", use_realtime: bool = True) -> Tuple[List[
     except Exception as e:
         return [], f"Verbindungsfehler: {e}"
 
-def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: int, 
-                          use_realtime: bool, reference_dt: datetime.datetime):
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_cached_neighbor_board(station_name: str) -> List[Dict[str, Any]]:
+    data, _ = fetch_dbf_board(station_name, mode="dep", use_realtime=True)
+    return data
+
+def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
+    cfg = st.session_state.cfg
+    lead_dep = int(cfg["lead_dep"])
+    lag_dep = int(cfg["lag_dep"])
+    lead_arr = int(cfg["lead_arr"])
+    lag_arr = int(cfg["lag_arr"])
+    track_through = bool(cfg["track_through_trains"])
+    transit_ma = int(cfg["transit_ma_min"])
+    transit_kl = int(cfg["transit_kl_min"])
+
     raw_intervals = []
     zugliste = []
     seen_events = set()
+    neustadt_train_numbers = set()
 
-    dep_data, _ = fetch_dbf_board(mode="dep", use_realtime=use_realtime)
-    arr_data, _ = fetch_dbf_board(mode="arr", use_realtime=use_realtime)
+    dep_data, _ = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime)
+    arr_data, _ = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime)
 
+    # 1. Abfahrten ab Neustadt
     for tr in dep_data:
         if tr.get("is_cancelled") or tr.get("isCancelled"):
             continue
@@ -147,10 +184,17 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
         if not found_neustadt:
             post_stops = route_stops
 
-        if check_corridor_match(dest) or check_corridor_match(post_stops):
-            train_name = tr.get("train") or tr.get("line") or "Zug"
+        is_west = any(kw in dest.lower() for kw in WEST_CORRIDOR_KEYWORDS) or \
+                  any(any(kw in s.lower() for kw in WEST_CORRIDOR_KEYWORDS) for s in post_stops)
+
+        if is_west:
+            train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
             delay = tr.get("delayDeparture", 0) if use_realtime else 0
+
+            num_match = re.search(r'\d+', train_name)
+            if num_match:
+                neustadt_train_numbers.add(num_match.group(0))
 
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
@@ -164,7 +208,7 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
                     raw_intervals.append((start, end, info))
                     delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
-                        "Richtung": "➡️ Abfahrt (West)",
+                        "Richtung": "➡️ Abfahrt (nach Westen)",
                         "Zug": train_name,
                         "Start/Ziel": dest,
                         "Fahrplanzeit": dep_dt.strftime("%H:%M") + delay_str,
@@ -172,6 +216,7 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
                         "_start_dt": start
                     })
 
+    # 2. Ankünfte in Neustadt
     kombinierte_ankuenfte = arr_data + dep_data
     for tr in kombinierte_ankuenfte:
         if tr.get("is_cancelled") or tr.get("isCancelled"):
@@ -185,11 +230,17 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
             pre_stops.append(s)
 
         origin = pre_stops[0] if pre_stops else tr.get("origin", "")
+        is_from_west = any(kw in origin.lower() for kw in WEST_CORRIDOR_KEYWORDS) or \
+                       any(any(kw in s.lower() for kw in WEST_CORRIDOR_KEYWORDS) for s in pre_stops)
 
-        if check_corridor_match(origin) or check_corridor_match(pre_stops):
-            train_name = tr.get("train") or tr.get("line") or "Zug"
+        if is_from_west:
+            train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time")
             delay = tr.get("delayArrival", 0) if use_realtime else 0
+
+            num_match = re.search(r'\d+', train_name)
+            if num_match:
+                neustadt_train_numbers.add(num_match.group(0))
 
             arr_dt = parse_time(sched_time, delay, reference_dt)
             if arr_dt:
@@ -204,7 +255,7 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
                     raw_intervals.append((start, end, info))
                     delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
-                        "Richtung": "⬅️ Ankunft (West)",
+                        "Richtung": "⬅️ Ankunft (aus Westen)",
                         "Zug": train_name,
                         "Start/Ziel": herkunft,
                         "Fahrplanzeit": arr_dt.strftime("%H:%M") + delay_str,
@@ -212,6 +263,102 @@ def get_steingleis_events(lead_dep: int, lag_dep: int, lead_arr: int, lag_arr: i
                         "_start_dt": start
                     })
 
+    # 3. Durchfahrten (ICE/TGV)
+    if track_through:
+        ma_dep_data = fetch_cached_neighbor_board("Mannheim Hbf")
+        kl_dep_data = fetch_cached_neighbor_board("Kaiserslautern Hbf")
+
+        for tr in ma_dep_data:
+            if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
+                continue
+
+            dest = tr.get("destination") or tr.get("direction") or ""
+            route_stops = extract_station_names(tr.get("route", []))
+
+            matches_west = any(kw in dest.lower() for kw in WEST_BOUND_DESTS) or \
+                           any(any(kw in s.lower() for kw in WEST_BOUND_DESTS) for s in route_stops)
+            if not matches_west:
+                continue
+
+            if any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
+                continue
+
+            train_name = clean_train_name(tr)
+            num_match = re.search(r'\d+', train_name)
+            if num_match and num_match.group(0) in neustadt_train_numbers:
+                continue
+
+            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
+            delay = tr.get("delayDeparture", 0) if use_realtime else 0
+
+            dep_dt = parse_time(sched_time, delay, reference_dt)
+            if dep_dt:
+                pass_dt = dep_dt + datetime.timedelta(minutes=transit_ma)
+                event_id = f"THROUGH_WEST_{train_name}_{sched_time}"
+
+                if event_id not in seen_events:
+                    seen_events.add(event_id)
+                    start = pass_dt - datetime.timedelta(seconds=lead_dep)
+                    end = pass_dt + datetime.timedelta(seconds=lag_dep)
+
+                    info = f"Durchfahrt: {train_name} -> {dest}"
+                    raw_intervals.append((start, end, info))
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
+                    zugliste.append({
+                        "Richtung": "➡️ Durchfahrt (nach Westen)",
+                        "Zug": train_name,
+                        "Start/Ziel": dest,
+                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')}{delay_str}",
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
+                        "_start_dt": start
+                    })
+
+        for tr in kl_dep_data:
+            if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
+                continue
+
+            dest = tr.get("destination") or tr.get("direction") or ""
+            route_stops = extract_station_names(tr.get("route", []))
+
+            matches_east = any(kw in dest.lower() for kw in EAST_BOUND_DESTS) or \
+                           any(any(kw in s.lower() for kw in EAST_BOUND_DESTS) for s in route_stops)
+            if not matches_east:
+                continue
+
+            if any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
+                continue
+
+            train_name = clean_train_name(tr)
+            num_match = re.search(r'\d+', train_name)
+            if num_match and num_match.group(0) in neustadt_train_numbers:
+                continue
+
+            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
+            delay = tr.get("delayDeparture", 0) if use_realtime else 0
+
+            dep_dt = parse_time(sched_time, delay, reference_dt)
+            if dep_dt:
+                pass_dt = dep_dt + datetime.timedelta(minutes=transit_kl)
+                event_id = f"THROUGH_EAST_{train_name}_{sched_time}"
+
+                if event_id not in seen_events:
+                    seen_events.add(event_id)
+                    start = pass_dt - datetime.timedelta(seconds=lead_arr)
+                    end = pass_dt + datetime.timedelta(seconds=lag_arr)
+
+                    info = f"Durchfahrt: {train_name} -> {dest}"
+                    raw_intervals.append((start, end, info))
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
+                    zugliste.append({
+                        "Richtung": "⬅️ Durchfahrt (aus Westen)",
+                        "Zug": train_name,
+                        "Start/Ziel": dest,
+                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')}{delay_str}",
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
+                        "_start_dt": start
+                    })
+
+    zugliste = sorted(zugliste, key=lambda x: x["_start_dt"])
     return raw_intervals, zugliste
 
 def merge_intervals(intervals, min_gap_sec: int):
@@ -235,7 +382,6 @@ def merge_intervals(intervals, min_gap_sec: int):
     return merged
 
 def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list, duration_min: int = 60) -> pd.DataFrame:
-    """Erzeugt lückenlose Zeitblöcke für das 60-Minuten-Gantt-Diagramm."""
     window_start = base_dt
     window_end = base_dt + datetime.timedelta(minutes=duration_min)
     events = []
@@ -250,7 +396,6 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
         eff_start = max(window_start, start)
         eff_end = min(window_end, end)
 
-        # Offenes Intervall vor der Schließung
         if eff_start > curr:
             events.append({
                 "Start": curr,
@@ -259,7 +404,6 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
                 "Details": "BÜ geöffnet"
             })
 
-        # Schließungs-Intervall
         events.append({
             "Start": eff_start,
             "Ende": eff_end,
@@ -268,7 +412,6 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
         })
         curr = max(curr, eff_end)
 
-    # Restliches Zeitfenster nach der letzten Schließung
     if curr < window_end:
         events.append({
             "Start": curr,
@@ -280,86 +423,23 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
     return pd.DataFrame(events)
 
 # ---------------------------------------------------------
-# BENUTZEROBERFLÄCHE
-# ---------------------------------------------------------
-st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
-
-with st.sidebar:
-    st.header("⚙️ Modus & Zeit")
-    modus_options = ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"]
-    default_modus_idx = 0 if cfg.get("modus") == modus_options[0] else 1
-
-    modus = st.radio("Betriebsmodus:", modus_options, index=default_modus_idx)
-    now_real = datetime.datetime.now()
-
-    if modus == modus_options[0]:
-        use_realtime = True
-        auto_refresh = st.toggle(
-            f"🔄 Auto-Refresh ({cfg.get('refresh_interval_sec', 15)}s)", 
-            value=cfg.get("auto_refresh", True)
-        )
-        plan_selected_time = None
-    else:
-        use_realtime = False
-        auto_refresh = False
-        st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
-        plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_real.time())
-
-    st.markdown("---")
-    st.header("🔔 Akustischer Signalton")
-    sound_alarm = st.toggle("Schrankengong aktivieren", value=cfg.get("sound_alarm", True))
-    sound_warn_sec = st.slider("Vorwarnzeit (Sek. vor Schließung)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5)
-
-    if st.button("🔊 Signalton testen", use_container_width=True):
-        components.html("<script>if(window.parent.playBUEBell) { window.parent.playBUEBell(3.0); }</script>", height=0)
-
-    st.markdown("---")
-    st.header("🛠️ Stellwerks-Parameter")
-    lead_dep = st.slider("Schließung vor Abfahrt (Sek.)", 30, 360, int(cfg.get("lead_dep", 240)), step=10)
-    lag_dep = st.slider("Öffnung nach Abfahrt (Sek.)", 30, 180, int(cfg.get("lag_dep", 90)), step=10)
-    lead_arr = st.slider("Schließung vor Ankunft (Sek.)", 60, 240, int(cfg.get("lead_arr", 160)), step=10)
-    lag_arr = st.slider("Öffnung vor Ankunft (Sek.)", 10, 90, int(cfg.get("lag_arr", 40)), step=5)
-    min_gap = st.slider("Mindestöffnungslücke (Sek.)", 0, 120, int(cfg.get("min_gap", 30)), step=10)
-
-    st.markdown("---")
-    # 0.) JSON DUMP: EINSTELLUNGEN DAUERHAFT SICHERN
-    if st.button("💾 Einstellungen als Standard speichern", use_container_width=True, type="primary"):
-        new_config = {
-            "modus": modus,
-            "auto_refresh": auto_refresh,
-            "refresh_interval_sec": int(cfg.get("refresh_interval_sec", 15)),
-            "sound_alarm": sound_alarm,
-            "sound_warn_sec": sound_warn_sec,
-            "lead_dep": int(lead_dep),
-            "lag_dep": int(lag_dep),
-            "lead_arr": int(lead_arr),
-            "lag_arr": int(lag_arr),
-            "min_gap": int(min_gap)
-        }
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(new_config, f, indent=2)
-        st.success("Werte in config.json gespeichert!")
-
-# ---------------------------------------------------------
 # SOUND-ENGINE & LIVE-UHR (CLIENTSEITIG IN JAVASCRIPT)
 # ---------------------------------------------------------
-components.html(
+render_iframe(
     """
     <script>
     const parentDoc = window.parent.document;
 
-    // 1. Authentischer elektronischer BÜ-Wecker / Gong (Web Audio API)
     window.parent.playBUEBell = function(durationSec = 2.5) {
         try {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             if (!AudioContext) return;
             const ctx = new AudioContext();
-            const strikeInterval = 0.55; // Gong-Schlag alle 550ms
+            const strikeInterval = 0.55;
             const strikes = Math.floor(durationSec / strikeInterval);
 
             for (let i = 0; i < strikes; i++) {
                 const strikeTime = ctx.currentTime + (i * strikeInterval);
-                // Harmonische Obertöne für authentischen BÜ-Klang (Gong/Schale)
                 [800, 1150, 1900].forEach((freq, idx) => {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
@@ -376,12 +456,9 @@ components.html(
                     osc.stop(strikeTime + 0.45);
                 });
             }
-        } catch(e) {
-            console.log("AudioContext noch nicht durch Nutzerklick aktiviert.", e);
-        }
+        } catch(e) {}
     };
 
-    // 2. Kontinuierliche Live-Uhr unten links
     let clockBadge = parentDoc.getElementById('steingleis-live-clock');
     if (!clockBadge) {
         clockBadge = parentDoc.createElement('div');
@@ -407,9 +484,7 @@ components.html(
 
     function tickClock() {
         const el = parentDoc.getElementById('steingleis-clock-text');
-        if (el) {
-            el.innerText = new Date().toLocaleTimeString('de-DE');
-        }
+        if (el) el.innerText = new Date().toLocaleTimeString('de-DE');
     }
     if (!window.parent.steingleisClockInterval) {
         window.parent.steingleisClockInterval = setInterval(tickClock, 1000);
@@ -417,148 +492,285 @@ components.html(
     tickClock();
     </script>
     """,
-    height=0
+    height=1
 )
 
-refresh_interval = int(cfg.get("refresh_interval_sec", 15)) if (use_realtime and auto_refresh) else None
-
 # ---------------------------------------------------------
-# DYNAMISCHES DASHBOARD (FRAGMENT)
+# SEITEN-NAVIGATION (SIDEBAR)
 # ---------------------------------------------------------
-@fragment_dec(run_every=refresh_interval)
-def render_live_dashboard():
-    current_time_tick = datetime.datetime.now()
-    if use_realtime:
-        calc_base_dt = current_time_tick
-    else:
-        calc_base_dt = current_time_tick.replace(
-            hour=plan_selected_time.hour, 
-            minute=plan_selected_time.minute, 
-            second=0
-        )
-
-    raw_intervals, zugliste = get_steingleis_events(
-        lead_dep, lag_dep, lead_arr, lag_arr, use_realtime, calc_base_dt
-    )
-    merged = merge_intervals(raw_intervals, min_gap)
-
-    is_closed = False
-    current_end = None
-    next_closure = None
-    active_reasons = []
-
-    for start, end, trains in merged:
-        if start <= calc_base_dt <= end:
-            is_closed = True
-            current_end = end
-            active_reasons = trains
-            break
-        elif start > calc_base_dt:
-            if next_closure is None or start < next_closure[0]:
-                next_closure = (start, end, trains)
-
-    # 3.) AKUSTISCHER ALARM AUSLÖSEN (falls kurz vor oder während Schließbeginn)
-    if use_realtime and sound_alarm:
-        should_alarm = False
-        if next_closure:
-            sec_to_next = (next_closure[0] - calc_base_dt).total_seconds()
-            if 0 < sec_to_next <= sound_warn_sec:
-                should_alarm = True
-        elif is_closed:
-            # Während der Schließphase kurz anschlagen
-            sec_since_start = (calc_base_dt - start).total_seconds() if 'start' in locals() else 0
-            if 0 <= sec_since_start <= 15:
-                should_alarm = True
-
-        if should_alarm:
-            components.html("<script>if(window.parent.playBUEBell){ window.parent.playBUEBell(2.5); }</script>", height=0)
-
-    # Status-Kacheln
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        sub_title = (
-            f"Live-Status (Stand: {current_time_tick.strftime('%H:%M:%S')} Uhr)" 
-            if use_realtime 
-            else f"Status um {calc_base_dt.strftime('%H:%M')} Uhr (Plan)"
-        )
-        st.subheader(sub_title)
-        
-        if is_closed:
-            st.error("### 🛑 SCHRANKE GESCHLOSSEN")
-            rest_sec = int((current_end - calc_base_dt).total_seconds())
-            st.metric("Geschlossen bis ca.", 
-                      current_end.strftime("%H:%M:%S"), 
-                      f"Noch {rest_sec // 60}m {rest_sec % 60:02d}s")
-            st.caption("Auslöser:")
-            for r in active_reasons:
-                st.write(f"- {r}")
-        else:
-            st.success("### ✅ SCHRANKE OFFEN (FREIE FAHRT)")
-            if next_closure:
-                s_next, e_next, tr_next = next_closure
-                diff_sec = int((s_next - calc_base_dt).total_seconds())
-                st.metric("Nächste Schließung um", 
-                          s_next.strftime("%H:%M:%S"), 
-                          f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
-                st.caption(f"Erster Zug: {tr_next[0]}")
-            else:
-                st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
-
-    with col2:
-        st.subheader("📋 Prognostizierte Schließphasen")
-        future_rows = []
-        for s, e, trs in merged:
-            if e >= calc_base_dt:
-                dur = int((e - s).total_seconds())
-                future_rows.append({
-                    "Von": s.strftime("%H:%M:%S"),
-                    "Bis": e.strftime("%H:%M:%S"),
-                    "Dauer": f"{dur // 60}m {dur % 60:02d}s",
-                    "Betroffene Züge": " + ".join(trs)
-                })
-        if future_rows:
-            st.dataframe(pd.DataFrame(future_rows), use_container_width=True, hide_index=True)
-        else:
-            st.write("Keine Schließungen im gewählten Zeitabschnitt.")
-
-    # 2.) VISUELLER ZEITSTRAHL (GANTT FÜR DIE NÄCHSTEN 60 MINUTEN)
+with st.sidebar:
+    st.title("🚦 BÜ Steingleis")
+    active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
-    st.subheader("⏱️ Zeitstrahl nächste 60 Minuten")
-    df_timeline = build_timeline_dataframe(calc_base_dt, merged, duration_min=60)
-    
-    if not df_timeline.empty:
-        chart = (
-            alt.Chart(df_timeline)
-            .mark_bar(cornerRadius=4, height=32)
-            .encode(
-                x=alt.X('Start:T', title='Uhrzeit', axis=alt.Axis(format='%H:%M', grid=True)),
-                x2='Ende:T',
-                color=alt.Color(
-                    'Status:N',
-                    scale=alt.Scale(
-                        domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'],
-                        range=['#22c55e', '#ef4444']
-                    ),
-                    legend=alt.Legend(title=None, orient='top')
-                ),
-                tooltip=[
-                    alt.Tooltip('Status:N', title='Status'),
-                    alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'),
-                    alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'),
-                    alt.Tooltip('Details:N', title='Details / Züge')
-                ]
+
+# =========================================================
+# SEITE 1: MONITOR
+# =========================================================
+if active_page == "🚦 Monitor":
+    with st.sidebar:
+        st.subheader("Modus & Zeit")
+        modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
+        now_real = datetime.datetime.now()
+
+        if modus == "🔴 Live-Echtzeit (Jetzt)":
+            use_realtime = True
+            auto_refresh = st.toggle(
+                f"🔄 Auto-Refresh ({st.session_state.cfg.get('refresh_interval_sec', 15)}s)", 
+                value=True
             )
-            .properties(height=80)
-        )
-        st.altair_chart(chart, use_container_width=True)
-
-    # Detail-Tabelle aller Züge
-    with st.expander(f"🔍 Alle erfassten Züge am Steingleis ({len(zugliste)} Fahrten)"):
-        if zugliste:
-            df_display = pd.DataFrame(zugliste).drop(columns=["_start_dt"])
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            plan_selected_time = None
         else:
-            st.write("Keine Fahrten gefunden.")
+            use_realtime = False
+            auto_refresh = False
+            st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
+            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_real.time())
 
-render_live_dashboard()
+        if st.button("🔄 Jetzt aktualisieren", width="stretch"):
+            st.rerun()
+
+    refresh_interval = int(st.session_state.cfg.get("refresh_interval_sec", 15)) if (use_realtime and auto_refresh) else None
+
+    @fragment_dec(run_every=refresh_interval)
+    def render_live_dashboard():
+        current_time_tick = datetime.datetime.now()
+        if use_realtime:
+            calc_base_dt = current_time_tick
+        else:
+            calc_base_dt = current_time_tick.replace(
+                hour=plan_selected_time.hour, 
+                minute=plan_selected_time.minute, 
+                second=0
+            )
+
+        raw_intervals, zugliste = get_steingleis_events(use_realtime, calc_base_dt)
+        min_gap = int(st.session_state.cfg.get("min_gap", 30))
+        merged = merge_intervals(raw_intervals, min_gap)
+
+        is_closed = False
+        current_start = None
+        current_end = None
+        next_closure = None
+        active_reasons = []
+
+        for start, end, trains in merged:
+            if start <= calc_base_dt <= end:
+                is_closed = True
+                current_start = start
+                current_end = end
+                active_reasons = trains
+                break
+            elif start > calc_base_dt:
+                if next_closure is None or start < next_closure[0]:
+                    next_closure = (start, end, trains)
+
+        # Akustischer Alarm
+        if use_realtime and st.session_state.cfg.get("sound_alarm", True):
+            sound_warn_sec = int(st.session_state.cfg.get("sound_warn_sec", 45))
+            should_alarm = False
+            if next_closure:
+                sec_to_next = (next_closure[0] - calc_base_dt).total_seconds()
+                if 0 < sec_to_next <= sound_warn_sec:
+                    should_alarm = True
+            elif is_closed and current_start:
+                sec_since_start = (calc_base_dt - current_start).total_seconds()
+                if 0 <= sec_since_start <= 15:
+                    should_alarm = True
+
+            if should_alarm:
+                render_iframe("<script>if(window.parent.playBUEBell){ window.parent.playBUEBell(2.5); }</script>", height=1)
+
+        # Statuskacheln
+        st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            sub_title = (
+                f"Live-Status (Stand: {current_time_tick.strftime('%H:%M:%S')} Uhr)" 
+                if use_realtime 
+                else f"Status um {calc_base_dt.strftime('%H:%M')} Uhr (Plan)"
+            )
+            st.subheader(sub_title)
+            
+            if is_closed:
+                st.error("### 🛑 SCHRANKE GESCHLOSSEN")
+                rest_sec = int((current_end - calc_base_dt).total_seconds())
+                st.metric("Geschlossen bis ca.", 
+                          current_end.strftime("%H:%M:%S"), 
+                          f"Noch {rest_sec // 60}m {rest_sec % 60:02d}s")
+                st.caption("Auslöser:")
+                for r in active_reasons:
+                    st.write(f"- {r}")
+            else:
+                st.success("### ✅ SCHRANKE OFFEN (FREIE FAHRT)")
+                if next_closure:
+                    s_next, e_next, tr_next = next_closure
+                    diff_sec = int((s_next - calc_base_dt).total_seconds())
+                    st.metric("Nächste Schließung um", 
+                              s_next.strftime("%H:%M:%S"), 
+                              f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
+                    st.caption(f"Erster Zug: {tr_next[0]}")
+                else:
+                    st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
+
+        with col2:
+            st.subheader("📋 Prognostizierte Schließphasen")
+            future_rows = []
+            for s, e, trs in merged:
+                if e >= calc_base_dt:
+                    dur = int((e - s).total_seconds())
+                    future_rows.append({
+                        "Von": s.strftime("%H:%M:%S"),
+                        "Bis": e.strftime("%H:%M:%S"),
+                        "Dauer": f"{dur // 60}m {dur % 60:02d}s",
+                        "Betroffene Züge": " + ".join(trs)
+                    })
+            if future_rows:
+                st.dataframe(pd.DataFrame(future_rows), width="stretch", hide_index=True)
+            else:
+                st.write("Keine Schließungen im gewählten Zeitabschnitt.")
+
+        # 60-Minuten-Zeitstrahl
+        st.markdown("---")
+        st.subheader("⏱️ Zeitstrahl nächste 60 Minuten")
+        df_timeline = build_timeline_dataframe(calc_base_dt, merged, duration_min=60)
+        
+        if not df_timeline.empty:
+            window_end = calc_base_dt + datetime.timedelta(minutes=60)
+            chart = (
+                alt.Chart(df_timeline)
+                .mark_bar(cornerRadius=4, height=36)
+                .encode(
+                    x=alt.X(
+                        'Start:T',
+                        title='Uhrzeit (5-Minuten-Takt)',
+                        scale=alt.Scale(domain=[calc_base_dt, window_end]),
+                        axis=alt.Axis(
+                            format='%H:%M',
+                            tickCount=12,
+                            labelAngle=0,
+                            labelFontSize=11,
+                            grid=True,
+                            gridDash=[2, 2],
+                            orient='bottom'
+                        )
+                    ),
+                    x2='Ende:T',
+                    color=alt.Color(
+                        'Status:N',
+                        scale=alt.Scale(
+                            domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'],
+                            range=['#22c55e', '#ef4444']
+                        ),
+                        legend=alt.Legend(title=None, orient='top', labelFontSize=12)
+                    ),
+                    tooltip=[
+                        alt.Tooltip('Status:N', title='Status'),
+                        alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'),
+                        alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'),
+                        alt.Tooltip('Details:N', title='Details / Züge')
+                    ]
+                )
+                .properties(height=125)
+            )
+            st.altair_chart(chart, width="stretch")
+
+        # Zugliste
+        with st.expander(f"🔍 Alle erfassten Züge am Steingleis ({len(zugliste)} Fahrten)"):
+            if zugliste:
+                df_display = pd.DataFrame(zugliste).drop(columns=["_start_dt"])
+                st.dataframe(df_display, width="stretch", hide_index=True)
+            else:
+                st.write("Keine Fahrten gefunden.")
+
+    render_live_dashboard()
+
+# =========================================================
+# SEITE 2: EINSTELLUNGEN
+# =========================================================
+elif active_page == "⚙️ Einstellungen":
+    st.title("⚙️ Einstellungen & Parameter")
+    st.caption("Konfiguration des Stellwerksmodells, der Durchfahrten und der Signale. Änderungen wirken sofort.")
+
+    cfg = st.session_state.cfg
+
+    tab1, tab2, tab3 = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "🔔 Ton & Auto-Refresh"])
+
+    with tab1:
+        st.subheader("Vor- und Nachlaufzeiten am BÜ Steingleis")
+        c1, c2 = st.columns(2)
+        with c1:
+            cfg["lead_dep"] = st.slider(
+                "Schließung vor Abfahrt Hbf (Sek.)", 30, 360, int(cfg.get("lead_dep", 240)), step=10,
+                help="Vorlaufzeit vor Planabfahrt am Hbf inklusive Signal- und Fahrstraßenstellung."
+            )
+            cfg["lag_dep"] = st.slider(
+                "Öffnung nach Abfahrt Hbf (Sek.)", 30, 180, int(cfg.get("lag_dep", 90)), step=10,
+                help="Zeit bis der abfahrende Zug den BÜ komplett geräumt hat."
+            )
+        with c2:
+            cfg["lead_arr"] = st.slider(
+                "Schließung vor Ankunft Hbf (Sek.)", 60, 240, int(cfg.get("lead_arr", 160)), step=10,
+                help="Zeitspanne vor Planankunft am Bahnsteig, wenn die Schranke fällt."
+            )
+            cfg["lag_arr"] = st.slider(
+                "Öffnung vor Ankunft Hbf (Sek.)", 10, 90, int(cfg.get("lag_arr", 40)), step=5,
+                help="Zeit vor Ankunft am Bahnsteig, zu der die Zugspitze den BÜ bereits passiert hat."
+            )
+
+        cfg["min_gap"] = st.slider(
+            "Mindestöffnungslücke zwischen zwei Zügen (Sek.)", 0, 120, int(cfg.get("min_gap", 30)), step=10,
+            help="Ist die Zeit zwischen Öffnung und nächster Schließung kürzer als dieser Wert, bleibt die Schranke dauerhaft geschlossen."
+        )
+
+    with tab2:
+        st.subheader("Fernverkehrs-Laufzeitüberwachung (KBS 670)")
+        cfg["track_through_trains"] = st.toggle(
+            "ICE- und TGV-Durchfahrten ohne Halt in Neustadt erfassen",
+            value=bool(cfg.get("track_through_trains", True)),
+            help="Überwacht die Nachbarknoten Mannheim Hbf und Kaiserslautern Hbf auf Züge Richtung Paris / Frankfurt."
+        )
+
+        col_ma, col_kl = st.columns(2)
+        with col_ma:
+            cfg["transit_ma_min"] = st.slider(
+                "Fahrzeit Mannheim Hbf -> BÜ Steingleis (Min.)", 10, 25, int(cfg.get("transit_ma_min", 16)), step=1,
+                help="Typische Reisezeit eines ICE/TGV durch die Rheinebene bis zum BÜ."
+            )
+        with col_kl:
+            cfg["transit_kl_min"] = st.slider(
+                "Fahrzeit Kaiserslautern Hbf -> BÜ Steingleis (Min.)", 12, 30, int(cfg.get("transit_kl_min", 19)), step=1,
+                help="Typische Reisezeit eines ICE/TGV durch den Pfälzerwald bis zum BÜ."
+            )
+
+    with tab3:
+        st.subheader("Signaltöne & Aktualisierungsintervall")
+        col_snd, col_ref = st.columns(2)
+        with col_snd:
+            cfg["sound_alarm"] = st.toggle("Schrankengong aktivieren", value=bool(cfg.get("sound_alarm", True)))
+            cfg["sound_warn_sec"] = st.slider(
+                "Vorwarnzeit vor Schließung (Sek.)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5
+            )
+            if st.button("🔊 Signalton jetzt testen"):
+                render_iframe("<script>if(window.parent.playBUEBell) { window.parent.playBUEBell(3.0); }</script>", height=1)
+
+        with col_ref:
+            cfg["refresh_interval_sec"] = st.slider(
+                "Auto-Refresh-Intervall (Sek.)", 10, 60, int(cfg.get("refresh_interval_sec", 15)), step=5,
+                help="Gibt an, wie oft das Live-Dashboard neue Daten von der DB abruft."
+            )
+
+    st.markdown("---")
+    col_save, col_reset = st.columns([1, 1])
+    with col_save:
+        if st.button("💾 Einstellungen als neuen Standard in config.json speichern", type="primary", width="stretch"):
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            st.success("✅ Einstellungen dauerhaft in config.json gespeichert!")
+
+    with col_reset:
+        if st.button("↩️ Auf Werkseinstellungen zurücksetzen", width="stretch"):
+            st.session_state.cfg = DEFAULT_CONFIG.copy()
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=2)
+            st.info("Werkseinstellungen wiederhergestellt.")
+            st.rerun()
