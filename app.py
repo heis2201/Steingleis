@@ -16,7 +16,7 @@ import altair as alt
 APP_VERSION = "0.1"
 
 st.set_page_config(
-    page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
+    page_title=f"BÜ Steingleis Monitor",
     page_icon="🚦",
     layout="wide"
 )
