@@ -41,12 +41,11 @@ STATION_NAME = "Neustadt(Weinstr)Hbf"
 # =========================================================
 # ADMIN-AUTHENTIFIZIERUNG VIA SHA-256 HASH
 # =========================================================
-# HIER DEINEN BERECHNETEN SHA-256 HASH EINFÜGEN:
 ADMIN_PWD_HASH = "825c6e3ce5143287592b8c50dc57b860808ae393f361eb37e7a4dfa8d4ff4695"
 SALT = "steingleis_kbs670"
 
 def verify_admin_password(input_password: str) -> bool:
-    if not input_password or ADMIN_PWD_HASH == "825c6e3ce5143287592b8c50dc57b860808ae393f361eb37e7a4dfa8d4ff4695":
+    if not input_password:
         return False
     calc_hash = hashlib.sha256((input_password.strip() + SALT).encode('utf-8')).hexdigest()
     return calc_hash == ADMIN_PWD_HASH
@@ -142,10 +141,14 @@ if "last_alarmed_closure" not in st.session_state:
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
+# Option B: Geheimer Admin-URL-Parameter (?admin=...)
+url_admin_token = st.query_params.get("admin", "")
+if url_admin_token and verify_admin_password(url_admin_token):
+    st.session_state.is_admin = True
+
 # Backup-Konfiguration (für Zurücksetzen ohne Admin-Speicherung)
 if "temp_cfg" not in st.session_state:
     st.session_state.temp_cfg = st.session_state.cfg.copy()
-
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -323,7 +326,6 @@ def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, tim
         return [], f"Verbindungsfehler ({station_name}): {e}"
 
 def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True, is_neighbor: bool = False) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    # Wir laden basierend auf der aktiven Session-Config
     cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
     cache_ttl = cfg.get("api_cache_through_sec", 120) if is_neighbor else cfg.get("api_cache_local_sec", 60)
     now_epoch = int(datetime.datetime.now().timestamp())
@@ -354,7 +356,7 @@ def check_crosses_steingleis(tr: dict, mode: str = "dep") -> bool:
                any(any(kw in str(s).lower() for kw in WEST_CORRIDOR_KEYWORDS) for s in pre_stops)
 
 def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -> Tuple[list, list, list]:
-    cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg if st.session_state.is_admin else st.session_state.temp_cfg
+    cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
     lead_dep = cfg["lead_dep"]
     lag_dep = cfg["lag_dep"]
     lead_arr = cfg["lead_arr"]
@@ -658,7 +660,6 @@ with st.sidebar:
 
         if modus == "🔴 Live-Echtzeit":
             use_realtime = True
-            # Admin steuert UI-Refresh für alle, Gäste lesen den Standard.
             cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
             ui_interval = int(cfg_to_read.get("ui_refresh_sec", 5))
             auto_refresh = st.toggle(f"🔄 Auto-Refresh ({ui_interval}s)", value=True)
@@ -896,7 +897,6 @@ elif active_page == "⚙️ Einstellungen":
     if st.session_state.get("config_load_error"):
         st.warning("⚠️ Die serverseitige `config.json` war fehlerhaft/unlesbar und wurde durch Standardwerte ersetzt.")
 
-    # Steuert, ob wir aus den globalen Einstellungen oder den temporären Benutzereinstellungen lesen
     cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
 
     tab1, tab2, tab3, tab_admin = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "⏱️ Taktung, API & Audio", "🔒 System-Admin"])
@@ -936,22 +936,18 @@ elif active_page == "⚙️ Einstellungen":
 
     with tab_admin:
         st.subheader("🔒 Server-Konfiguration speichern")
-        st.write("Um die aktuellen Schieberegler-Werte dauerhaft für **alle Besucher** zu übernehmen, wird das Admin-Passwort benötigt.")
-        
-        pwd_input = st.text_input("Admin-Passwort:", type="password", key="admin_pwd_input")
+        if st.session_state.is_admin:
+            st.success("🔓 Sie sind als Administrator authentifiziert. Einstellungen können direkt gespeichert werden.")
+            pwd_input = None
+        else:
+            st.write("Um die aktuellen Schieberegler-Werte dauerhaft für **alle Besucher** zu übernehmen, wird das Admin-Passwort benötigt.")
+            pwd_input = st.text_input("Admin-Passwort:", type="password", key="admin_pwd_input")
         
         col_save, col_reset = st.columns([1, 1])
         with col_save:
             if st.button("💾 Dauerhaft in config.json speichern", type="primary", width="stretch"):
-                # Secret-Abgleich, falls vorhanden. Fallback auf ein lokales Hardcode-Wort (hier nur zur Sicherheit)
-                secret_pwd = ""
-                try:
-                    secret_pwd = st.secrets["ADMIN_PASSWORD"]
-                except:
-                    secret_pwd = "steingleis-admin" # Fallback, falls st.secrets nicht angelegt ist
-                
-                if pwd_input == secret_pwd:
-                    # Passwort ist korrekt: Temp-Config wird in Main-Config übernommen und gespeichert
+                is_authorized = st.session_state.is_admin or (pwd_input and verify_admin_password(pwd_input))
+                if is_authorized:
                     st.session_state.cfg = st.session_state.temp_cfg.copy()
                     success = save_config_atomic(st.session_state.cfg)
                     if success:
@@ -965,7 +961,6 @@ elif active_page == "⚙️ Einstellungen":
 
         with col_reset:
             if st.button("↩️ Vorschau-Modus zurücksetzen (Neu laden)", width="stretch"):
-                # Überschreibt die eigenen Spielereien wieder mit dem Server-Stand
                 st.session_state.temp_cfg = st.session_state.cfg.copy()
                 st.session_state.is_admin = False
                 st.info("Ihre temporären Änderungen wurden verworfen. Lade Server-Standard...")
