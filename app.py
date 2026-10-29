@@ -32,7 +32,7 @@ def get_german_now() -> datetime.datetime:
     """Liefert die exakte deutsche Ortszeit ohne Tzinfo-Tags."""
     return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
-# Robuster absoluter Dateipfad (Audit-Fix 2 & 5)
+# Robuster absoluter Dateipfad
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATION_NAME = "Neustadt(Weinstr)Hbf"
@@ -119,7 +119,7 @@ def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
 
-# Alarm-Entprellung (Audit-Fix 3: Nur 1x pro Schließungs-Event gongen)
+# Alarm-Entprellung
 if "last_alarmed_closure" not in st.session_state:
     st.session_state.last_alarmed_closure = None
 
@@ -166,7 +166,7 @@ def get_http_session() -> requests.Session:
 def render_sidebar_clock():
     """Zeigt eine kontinuierlich im Browser laufende Uhrzeit im Sans-Serif-Font an."""
     clock_html = """
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 0.875rem; color: #555; padding: 2px 0 6px 0;">
+    <div style="font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; font-size: 0.875rem; color: #555; padding: 2px 0 6px 0;">
         🕒 Aktuelle Uhrzeit: <span id="live-clock" style="color: #555;">--:--:-- Uhr</span>
     </div>
     <script>
@@ -233,6 +233,10 @@ def play_sound_cloud():
 # ---------------------------------------------------------
 # HILFSFUNKTIONEN & CACHED API-FETCH
 # ---------------------------------------------------------
+def clean_html(raw_html: str) -> str:
+    """Entfernt führende Leerzeichen aus HTML-Zeilen, um die Markdown-Codeblock-Falle zu verhindern."""
+    return "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
+
 def is_fernverkehr(tr: dict) -> bool:
     raw = (tr.get("train") or tr.get("line") or "").strip().upper()
     return any(raw.startswith(prefix) for prefix in ["ICE", "TGV", "IC", "EC", "ECE"])
@@ -386,9 +390,9 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
         if check_crosses_steingleis(tr, mode="dep"):
             train_name = clean_train_name(tr)
-            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
+            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time") or tr.get("scheduledTime")
             dest = tr.get("destination") or tr.get("direction") or ""
-            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
+            delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
 
             num_match = re.search(r'\d+', train_name)
             if num_match:
@@ -422,8 +426,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
         if check_crosses_steingleis(tr, mode="arr"):
             train_name = clean_train_name(tr)
-            sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time")
-            delay = int_or_default(tr.get("delayArrival", 0), 0) if use_realtime else 0
+            sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time") or tr.get("scheduledTime")
+            delay = int_or_default(tr.get("delayArrival", tr.get("delay", 0)), 0) if use_realtime else 0
 
             num_match = re.search(r'\d+', train_name)
             if num_match:
@@ -458,7 +462,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                         "_start_dt": start
                     })
 
-    # 3. Durchfahrten (ICE/TGV) - Audit-Fix 1: use_realtime sauber weiterreichen
+    # 3. Durchfahrten (ICE/TGV)
     if track_through:
         ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
         kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
@@ -483,8 +487,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             if num_match and num_match.group(0) in neustadt_train_numbers:
                 continue
 
-            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
-            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
+            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time") or tr.get("scheduledTime")
+            delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
 
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
@@ -524,8 +528,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             if num_match and num_match.group(0) in neustadt_train_numbers:
                 continue
 
-            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
-            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
+            sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time") or tr.get("scheduledTime")
+            delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
 
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
@@ -620,21 +624,37 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
     """Rendert einen Zug als authentische DB-Fahrgastinformations-Kachel (dunkelblau)."""
     is_cancelled = bool(tr.get("is_cancelled") or tr.get("isCancelled"))
     train_name = clean_train_name(tr)
-    sched_time = tr.get("scheduledDeparture" if mode == "dep" else "scheduledArrival") or tr.get("time") or "--:--"
-    delay = int_or_default(tr.get("delayDeparture" if mode == "dep" else "delayArrival", 0), 0) if use_realtime else 0
+    
+    if mode == "dep":
+        sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time") or tr.get("scheduledTime") or "--:--"
+        delay_raw = tr.get("delayDeparture")
+    else:
+        sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time") or tr.get("scheduledTime") or "--:--"
+        delay_raw = tr.get("delayArrival")
+        
+    if delay_raw is None:
+        delay_raw = tr.get("delay", 0)
+    delay = int_or_default(delay_raw, 0) if use_realtime else 0
     platform = tr.get("platform") or tr.get("scheduledPlatform") or "-"
 
     # Station und Zwischenhalte
     route_stops = extract_station_names(tr.get("route", []))
     if mode == "dep":
-        main_station = tr.get("destination") or tr.get("direction") or "Unbekannt"
+        main_station = tr.get("destination") or tr.get("direction") or ""
+        if not main_station and route_stops:
+            main_station = route_stops[-1]
+        if not main_station:
+            main_station = "Neustadt(Weinstr)Hbf"
+
         post_stops = []
         found_neustadt = False
         for s in route_stops:
             if found_neustadt:
-                post_stops.append(s)
+                post_stops.append(str(s))
             elif is_neustadt_hbf(str(s)):
                 found_neustadt = True
+        if not found_neustadt:
+            post_stops = [str(s) for s in route_stops]
         via_stops = " • ".join(post_stops[:5]) if post_stops else ""
         via_label = f"über: {via_stops}" if via_stops else ""
     else:
@@ -642,8 +662,11 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
         for s in route_stops:
             if is_neustadt_hbf(str(s)):
                 break
-            pre_stops.append(s)
-        main_station = pre_stops[0] if pre_stops else tr.get("origin", "Unbekannt")
+            pre_stops.append(str(s))
+        origin = pre_stops[0] if pre_stops else tr.get("origin", "")
+        if not origin:
+            origin = "Unbekannt"
+        main_station = origin
         via_stops = " • ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
         via_label = f"aus Richtung: {via_stops}" if via_stops else ""
 
@@ -652,30 +675,16 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
 
     # Zeit- und Verspätungsspalte
     if is_cancelled:
-        time_html = f"""
-        <div style="font-size: 1.25rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1.1;">{sched_time}</div>
-        <div style="font-size: 0.75rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 3px;">Fällt aus</div>
-        """
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 3px;">Fällt aus</div>'
     elif use_realtime and delay > 0:
-        time_html = f"""
-        <div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div>
-        <div style="font-size: 0.82rem; font-weight: 700; color: #ffb300; margin-top: 3px;">+{delay} min</div>
-        """
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.82rem; font-weight: 700; color: #ffb300; margin-top: 3px;">+{delay} min</div>'
     elif use_realtime:
-        time_html = f"""
-        <div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div>
-        <div style="font-size: 0.75rem; color: #4caf50; font-weight: 600; margin-top: 3px;">Pünktlich</div>
-        """
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #4caf50; font-weight: 600; margin-top: 3px;">Pünktlich</div>'
     else:
-        time_html = f"""
-        <div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div>
-        <div style="font-size: 0.75rem; color: #90caf9; margin-top: 3px;">Soll-Plan</div>
-        """
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #90caf9; margin-top: 3px;">Soll-Plan</div>'
 
     # Badge BÜ Steingleis
-    bu_badge = ""
-    if crosses_bu:
-        bu_badge = '<span style="background-color: #b71c1c; color: #ffffff; padding: 2px 7px; border-radius: 3px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; letter-spacing: 0.3px;">🚦 BÜ Steingleis</span>'
+    bu_badge = '<span style="background-color: #b71c1c; color: #ffffff; padding: 2px 7px; border-radius: 3px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; letter-spacing: 0.3px;">🚦 BÜ Steingleis</span>' if crosses_bu else ''
 
     # Zuggattungs-Badge Styling (ICE weiß/grau, Nahverkehr blau)
     is_fv = is_fernverkehr(tr)
@@ -700,35 +709,28 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
             elif isinstance(item, str):
                 msg_list.append(item)
     msg_str = " | ".join(msg_list) if msg_list else ""
+    msg_html = f'<div style="color: #ffd54f; font-size: 0.78rem; font-weight: 600; margin-top: 4px;">⚠️ {msg_str}</div>' if msg_str else ''
+    via_html = f'<div style="font-size: 0.8rem; color: #9bb2d4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
 
-    card_html = f"""
-    <div style="background-color: #0b1a30; border-bottom: 2px solid #1c365d; border-radius: 4px; padding: 10px 14px; margin-bottom: 7px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">
-        <!-- Zeitspalte links -->
-        <div style="min-width: 78px; text-align: left;">
-            {time_html}
-        </div>
-        <!-- Zug & Ziel/Laufweg Mitte -->
-        <div style="flex-grow: 1; padding: 0 16px; overflow: hidden;">
-            <div style="display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 3px;">
-                <span style="background-color: {badge_bg}; color: {badge_fg}; font-size: 0.85rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 10px;">
-                    {train_name}
-                </span>
-                <span style="font-size: 1.15rem; font-weight: 700; color: #ffffff; letter-spacing: 0.2px;">
-                    {main_station}
-                </span>
-                {bu_badge}
-            </div>
-            {f'<div style="font-size: 0.8rem; color: #9bb2d4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''}
-            {f'<div style="color: #ffd54f; font-size: 0.78rem; font-weight: 600; margin-top: 4px;">⚠️ {msg_str}</div>' if msg_str else ''}
-        </div>
-        <!-- Gleisanzeige rechts im DB-Kasten-Design -->
-        <div style="min-width: 68px; text-align: center; border: 2px solid #2a528a; background-color: #061122; padding: 4px 8px; border-radius: 4px;">
-            <div style="font-size: 0.65rem; color: #9bb2d4; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Gleis</div>
-            <div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; line-height: 1.1;">{platform}</div>
-        </div>
-    </div>
-    """
-    st.markdown(card_html, unsafe_allow_html=True)
+    card_html = (
+        f'<div style="background-color: #0b1a30; border-bottom: 2px solid #1c365d; border-radius: 4px; padding: 10px 14px; margin-bottom: 7px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">'
+        f'<div style="min-width: 78px; text-align: left;">{time_html}</div>'
+        f'<div style="flex-grow: 1; padding: 0 16px; overflow: hidden;">'
+        f'<div style="display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 3px;">'
+        f'<span style="background-color: {badge_bg}; color: {badge_fg}; font-size: 0.85rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 10px;">{train_name}</span>'
+        f'<span style="font-size: 1.15rem; font-weight: 700; color: #ffffff; letter-spacing: 0.2px;">{main_station}</span>'
+        f'{bu_badge}'
+        f'</div>'
+        f'{via_html}'
+        f'{msg_html}'
+        f'</div>'
+        f'<div style="min-width: 68px; text-align: center; border: 2px solid #2a528a; background-color: #061122; padding: 4px 8px; border-radius: 4px;">'
+        f'<div style="font-size: 0.65rem; color: #9bb2d4; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Gleis</div>'
+        f'<div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; line-height: 1.1;">{platform}</div>'
+        f'</div>'
+        f'</div>'
+    )
+    st.markdown(clean_html(card_html), unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # SEITEN-NAVIGATION (SIDEBAR)
@@ -994,6 +996,15 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_dep.append(tr)
 
             if filtered_dep:
+                # Tabellenkopf im DB-Monitor-Stil
+                header_html = (
+                    '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;">'
+                    '<div style="min-width: 78px;">Zeit</div>'
+                    '<div style="flex-grow: 1; padding: 0 16px;">Zug / Fahrtziel</div>'
+                    '<div style="min-width: 68px; text-align: center;">Gleis</div>'
+                    '</div>'
+                )
+                st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_dep:
                     render_db_board_card(tr, mode="dep", use_realtime=use_realtime)
             else:
@@ -1025,6 +1036,15 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_arr.append(tr)
 
             if filtered_arr:
+                # Tabellenkopf im DB-Monitor-Stil
+                header_html = (
+                    '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;">'
+                    '<div style="min-width: 78px;">Zeit</div>'
+                    '<div style="flex-grow: 1; padding: 0 16px;">Zug / Herkunft</div>'
+                    '<div style="min-width: 68px; text-align: center;">Gleis</div>'
+                    '</div>'
+                )
+                st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_arr:
                     render_db_board_card(tr, mode="arr", use_realtime=use_realtime)
             else:
