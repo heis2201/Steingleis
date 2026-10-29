@@ -18,7 +18,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -35,19 +35,24 @@ def get_german_now() -> datetime.datetime:
 CONFIG_FILE = "config.json"
 STATION_NAME = "Neustadt(Weinstr)Hbf"
 
-# Schema für Typprüfung und Wertegrenzen (Audit-Fix 1)
+# Schema für Typprüfung, Wertegrenzen und Default-Werte
 CONFIG_SCHEMA = {
-    "refresh_interval_sec": (int, 5, 120, 15),
-    "sound_alarm": (bool, None, None, True),
-    "sound_warn_sec": (int, 10, 180, 45),
-    "track_through_trains": (bool, None, None, True),
-    "transit_ma_min": (int, 5, 60, 16),
-    "transit_kl_min": (int, 5, 60, 19),
+    # Taktung & API-Schonung
+    "ui_refresh_sec": (int, 2, 30, 5),
+    "api_cache_local_sec": (int, 30, 300, 60),
+    "api_cache_through_sec": (int, 60, 600, 120),
+    # Stellwerkszeiten
     "lead_dep": (int, 0, 600, 240),
     "lag_dep": (int, 0, 300, 90),
     "lead_arr": (int, 0, 600, 160),
     "lag_arr": (int, 0, 300, 40),
-    "min_gap": (int, 0, 300, 30)
+    "min_gap": (int, 0, 300, 30),
+    # Fernverkehr & Audio
+    "track_through_trains": (bool, None, None, True),
+    "transit_ma_min": (int, 5, 60, 16),
+    "transit_kl_min": (int, 5, 60, 19),
+    "sound_alarm": (bool, None, None, True),
+    "sound_warn_sec": (int, 10, 180, 45)
 }
 
 DEFAULT_CONFIG = {k: v[3] for k, v in CONFIG_SCHEMA.items()}
@@ -82,7 +87,7 @@ def load_config() -> dict:
     return DEFAULT_CONFIG.copy()
 
 def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
-    """Schreibt die Konfiguration atomar über eine Zwischendatei (Audit-Fix 1)."""
+    """Schreibt die Konfiguration atomar über eine temporäre Datei."""
     try:
         clean_cfg = validate_and_sanitize_config(cfg)
         dir_name = os.path.dirname(os.path.abspath(filepath))
@@ -118,7 +123,7 @@ else:
         return wrapper
 
 # ---------------------------------------------------------
-# HTTP-SESSION MIT RETRY & POOLING (Audit-Fix 4 & 5)
+# HTTP-SESSION MIT RETRY & POOLING
 # ---------------------------------------------------------
 @st.cache_resource
 def get_http_session() -> requests.Session:
@@ -135,7 +140,37 @@ def get_http_session() -> requests.Session:
     return session
 
 # ---------------------------------------------------------
-# SANDBOXED AUDIO-ALARM (Audit-Fix 2)
+# CLIENT-SEITIGE LIVE-UHR (UNABHÄNGIG VOM UI-REFRESH)
+# ---------------------------------------------------------
+def render_live_clock():
+    """Zeigt eine kontinuierlich im Browser laufende Uhrzeit (MEZ/MESZ) an."""
+    clock_html = """
+    <div style="font-family: inherit; font-size: 1.05rem; color: #555; padding: 4px 0 10px 0;">
+        🕒 Aktuelle Uhrzeit (MEZ/MESZ): <strong id="live-clock" style="color: #111;">--:--:-- Uhr</strong>
+    </div>
+    <script>
+    (function() {
+        function updateClock() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('de-DE', { 
+                timeZone: 'Europe/Berlin', 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            const el = document.getElementById('live-clock');
+            if (el) el.innerText = timeStr + " Uhr";
+        }
+        updateClock();
+        setInterval(updateClock, 1000);
+    })();
+    </script>
+    """
+    components.html(clock_html, height=40)
+
+# ---------------------------------------------------------
+# SANDBOXED AUDIO-ALARM
 # ---------------------------------------------------------
 def play_sound_cloud():
     """Führt den Audio-Synthesizer in einem isolierten Iframe aus."""
@@ -176,7 +211,7 @@ def play_sound_cloud():
     components.html(js_code, height=0, width=0)
 
 # ---------------------------------------------------------
-# HILFSFUNKTIONEN & FILTER
+# HILFSFUNKTIONEN & CACHED API-FETCH
 # ---------------------------------------------------------
 def is_fernverkehr(tr: dict) -> bool:
     raw = (tr.get("train") or tr.get("line") or "").strip().upper()
@@ -222,7 +257,6 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
         except Exception:
             pass
 
-    # Robuste Mitternachtskorrektur relative zur gewählten Referenzzeit
     if dt < ref - datetime.timedelta(hours=6):
         dt += datetime.timedelta(days=1)
     elif dt > ref + datetime.timedelta(hours=18):
@@ -230,9 +264,11 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
 
     return dt
 
-def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+@st.cache_data(show_spinner=False)
+def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, time_bucket: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Fragt die DBF-API ab. Cached sitzungsübergreifend solange 'time_bucket' gleich bleibt."""
     session = get_http_session()
-    headers = {"User-Agent": "Streamlit-Steingleis-Monitor/0.1.1"}
+    headers = {"User-Agent": f"Streamlit-Steingleis-Monitor/{APP_VERSION} (github.com/heis2201/Steingleis)"}
     safe_station = urllib.parse.quote(station_name)
     url = f"https://dbf.finalrewind.org/{safe_station}.json?version=3"
     if mode == "arr":
@@ -250,12 +286,15 @@ def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = T
     except Exception as e:
         return [], f"Verbindungsfehler ({station_name}): {e}"
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_cached_neighbor_board(station_name: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    return fetch_dbf_board(station_name, mode="dep", use_realtime=True)
+def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True, is_neighbor: bool = False) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Ermittelt das konfigurierte Cache-Fenster und leitet an die gecachte Funktion weiter."""
+    cfg = st.session_state.cfg
+    cache_ttl = cfg.get("api_cache_through_sec", 120) if is_neighbor else cfg.get("api_cache_local_sec", 60)
+    now_epoch = int(datetime.datetime.now().timestamp())
+    time_bucket = now_epoch // max(cache_ttl, 5)
+    return fetch_dbf_board_cached(station_name, mode, use_realtime, time_bucket)
 
 def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -> Tuple[list, list, list]:
-    """Ermittelt alle Schließungsintervalle und gibt gesammelte API-Fehler zurück (Audit-Fix 4)."""
     cfg = st.session_state.cfg
     lead_dep = cfg["lead_dep"]
     lag_dep = cfg["lag_dep"]
@@ -271,8 +310,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
     neustadt_train_numbers = set()
     api_errors = []
 
-    dep_data, dep_err = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime)
-    arr_data, arr_err = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime)
+    dep_data, dep_err = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime, is_neighbor=False)
+    arr_data, arr_err = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime, is_neighbor=False)
 
     if dep_err:
         api_errors.append(dep_err)
@@ -378,8 +417,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
     # 3. Durchfahrten (ICE/TGV)
     if track_through:
-        ma_dep_data, ma_err = fetch_cached_neighbor_board("Mannheim Hbf")
-        kl_dep_data, kl_err = fetch_cached_neighbor_board("Kaiserslautern Hbf")
+        ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=True, is_neighbor=True)
+        kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=True, is_neighbor=True)
         if ma_err:
             api_errors.append(ma_err)
         if kl_err:
@@ -550,8 +589,9 @@ with st.sidebar:
 
         if modus == "🔴 Live-Echtzeit (Jetzt)":
             use_realtime = True
+            ui_interval = int(st.session_state.cfg.get("ui_refresh_sec", 5))
             auto_refresh = st.toggle(
-                f"🔄 Auto-Refresh ({st.session_state.cfg.get('refresh_interval_sec', 15)}s)", 
+                f"🔄 Auto-Refresh ({ui_interval}s)", 
                 value=True
             )
             plan_selected_dt = None
@@ -559,15 +599,15 @@ with st.sidebar:
             use_realtime = False
             auto_refresh = False
             st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
-            # Audit-Fix 3: Datum + Uhrzeit gemeinsam erfassen
             col_d, col_t = st.columns(2)
             sel_date = col_d.date_input("Datum:", value=now_german.date())
             sel_time = col_t.time_input("Uhrzeit:", value=now_german.time())
             plan_selected_dt = datetime.datetime.combine(sel_date, sel_time)
 
-        st.caption(f"🕒 Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
+        st.caption(f"🕒 Stand Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
 
-        if st.button("🔄 Jetzt aktualisieren", width="stretch"):
+        if st.button("🔄 Jetzt Daten neu laden", width="stretch"):
+            st.cache_data.clear()
             st.rerun()
 
     st.markdown('<div style="flex-grow: 1;"></div>', unsafe_allow_html=True)
@@ -592,7 +632,7 @@ with st.sidebar:
 # SEITE 1: MONITOR
 # =========================================================
 if active_page == "🚦 Monitor":
-    refresh_interval = int(st.session_state.cfg.get("refresh_interval_sec", 15)) if (use_realtime and auto_refresh) else None
+    refresh_interval = int(st.session_state.cfg.get("ui_refresh_sec", 5)) if (use_realtime and auto_refresh) else None
 
     @fragment_dec(run_every=refresh_interval)
     def render_live_dashboard():
@@ -603,7 +643,12 @@ if active_page == "🚦 Monitor":
         min_gap = int(st.session_state.cfg.get("min_gap", 30))
         merged = merge_intervals(raw_intervals, min_gap)
 
-        # Audit-Fix 4: Sichtbare Warnung bei API-Ausfällen
+        st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
+        if use_realtime:
+            render_live_clock()
+        else:
+            st.caption(f"🕒 Referenz-Zeitstempel (Plan): **{calc_base_dt.strftime('%d.%m.%Y %H:%M:%S')} Uhr**")
+
         if api_errors:
             with st.expander("⚠️ Verbindungswarnung zur Fahrplan-API", expanded=True):
                 for err in api_errors:
@@ -643,16 +688,12 @@ if active_page == "🚦 Monitor":
             if should_alarm:
                 play_sound_cloud()
 
-        # Titel & Header
-        st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
-        st.caption(f"🕒 Referenz-Zeitstempel: **{calc_base_dt.strftime('%d.%m.%Y %H:%M:%S')} Uhr**")
         col1, col2 = st.columns([1, 1])
 
         with col1:
             sub_title = "Live-Status (Jetzt)" if use_realtime else f"Status am {calc_base_dt.strftime('%d.%m. um %H:%M')} Uhr (Plan)"
             st.subheader(sub_title)
             
-            # Audit-Fix 4: Fail-Safe Statusanzeige
             if not zugliste and api_errors:
                 st.warning("### ⚠️ STATUS UNBEKANNT (KEINE DATEN)")
                 st.metric("Schrankenstatus", "Unbekannt", "API-Fehler")
@@ -754,10 +795,10 @@ if active_page == "🚦 Monitor":
 # =========================================================
 elif active_page == "⚙️ Einstellungen":
     st.title("⚙️ Einstellungen & Parameter")
-    st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells. Änderungen wirken sofort.")
+    st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells, der Taktung und der API-Caches.")
 
     cfg = st.session_state.cfg
-    tab1, tab2, tab3 = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "🔔 Ton & Auto-Refresh"])
+    tab1, tab2, tab3 = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "⏱️ Taktung, API & Audio"])
 
     with tab1:
         st.subheader("Vor- und Nachlaufzeiten am BÜ Steingleis")
@@ -805,20 +846,37 @@ elif active_page == "⚙️ Einstellungen":
             )
 
     with tab3:
-        st.subheader("Signaltöne & Aktualisierungsintervall")
-        col_snd, col_ref = st.columns(2)
-        with col_snd:
+        st.subheader("⏱️ Taktung & API-Schonung")
+        st.caption("Entkopplung von Benutzeroberfläche und externen Netzwerkaufrufen zum Schutz der DBF-API.")
+
+        c_ui, c_api1, c_api2 = st.columns(3)
+        with c_ui:
+            cfg["ui_refresh_sec"] = st.slider(
+                "🖥️ UI-Neuberechnung (Sek.)", 2, 20, int(cfg.get("ui_refresh_sec", 5)), step=1,
+                help="Intervall, in dem die Schranken-Intervalle und Grafiken im Browser lokal durchgerechnet werden."
+            )
+        with c_api1:
+            cfg["api_cache_local_sec"] = st.slider(
+                "📡 DB-Abruf Neustadt (Sek.)", 30, 180, int(cfg.get("api_cache_local_sec", 60)), step=10,
+                help="Cache-Gültigkeit für Ankünfte und Abfahrten in Neustadt(Weinstr)Hbf."
+            )
+        with c_api2:
+            cfg["api_cache_through_sec"] = st.slider(
+                "🚄 DB-Abruf Fernverkehr (Sek.)", 60, 300, int(cfg.get("api_cache_through_sec", 120)), step=15,
+                help="Cache-Gültigkeit für ICE/TGV-Abfragen der Nachbarknoten Mannheim und Kaiserslautern."
+            )
+
+        st.markdown("---")
+        st.subheader("🔔 Akustische Warnung")
+        col_snd1, col_snd2 = st.columns(2)
+        with col_snd1:
             cfg["sound_alarm"] = st.toggle("Schrankengong aktivieren", value=bool(cfg.get("sound_alarm", True)))
             cfg["sound_warn_sec"] = st.slider(
                 "Vorwarnzeit vor Schließung (Sek.)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5
             )
+        with col_snd2:
             if st.button("🔊 Signalton jetzt testen"):
                 play_sound_cloud()
-
-        with col_ref:
-            cfg["refresh_interval_sec"] = st.slider(
-                "Auto-Refresh-Intervall (Sek.)", 10, 60, int(cfg.get("refresh_interval_sec", 15)), step=5
-            )
 
     st.markdown("---")
     col_save, col_reset = st.columns([1, 1])
