@@ -46,7 +46,7 @@ ADMIN_PWD_HASH = "825c6e3ce5143287592b8c50dc57b860808ae393f361eb37e7a4dfa8d4ff46
 SALT = "steingleis_kbs670"
 
 def verify_admin_password(input_password: str) -> bool:
-    if not input_password or ADMIN_PWD_HASH == "HIER_DEN_BERECHNETEN_HASH_EINFÜGEN":
+    if not input_password or ADMIN_PWD_HASH == "825c6e3ce5143287592b8c50dc57b860808ae393f361eb37e7a4dfa8d4ff4695":
         return False
     calc_hash = hashlib.sha256((input_password.strip() + SALT).encode('utf-8')).hexdigest()
     return calc_hash == ADMIN_PWD_HASH
