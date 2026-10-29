@@ -38,8 +38,8 @@ STATION_NAME = "Neustadt(Weinstr)Hbf"
 CONFIG_SCHEMA = {
     # Taktung & API-Schonung
     "ui_refresh_sec": (int, 2, 30, 5),
-    "api_cache_local_sec": (int, 30, 300, 60),
-    "api_cache_through_sec": (int, 60, 600, 120),
+    "api_cache_local_sec": (int, 10, 120, 60),
+    "api_cache_through_sec": (int, 15, 180, 120),
     # Stellwerkszeiten
     "lead_dep": (int, 0, 600, 240),
     "lag_dep": (int, 0, 300, 90),
@@ -845,17 +845,17 @@ elif active_page == "⚙️ Einstellungen":
         c_ui, c_api1, c_api2 = st.columns(3)
         with c_ui:
             cfg["ui_refresh_sec"] = st.slider(
-                "🖥️ UI-Neuberechnung (Sek.)", 2, 20, int(cfg.get("ui_refresh_sec", 5)), step=1,
+                "🖥️ UI-Neuberechnung (Sek.)", 2, 30, int(cfg.get("ui_refresh_sec", 5)), step=1,
                 help="Intervall, in dem die Schranken-Intervalle und Grafiken im Browser lokal durchgerechnet werden."
             )
         with c_api1:
             cfg["api_cache_local_sec"] = st.slider(
-                "📡 DB-Abruf Neustadt (Sek.)", 30, 180, int(cfg.get("api_cache_local_sec", 60)), step=10,
+                "📡 DB-Abruf Neustadt (Sek.)", 10, 120, int(cfg.get("api_cache_local_sec", 60)), step=5,
                 help="Cache-Gültigkeit für Ankünfte und Abfahrten in Neustadt(Weinstr)Hbf."
             )
         with c_api2:
             cfg["api_cache_through_sec"] = st.slider(
-                "🚄 DB-Abruf Fernverkehr (Sek.)", 60, 300, int(cfg.get("api_cache_through_sec", 120)), step=15,
+                "🚄 DB-Abruf Fernverkehr (Sek.)", 15, 180, int(cfg.get("api_cache_through_sec", 120)), step=15,
                 help="Cache-Gültigkeit für ICE/TGV-Abfragen der Nachbarknoten Mannheim und Kaiserslautern."
             )
 
