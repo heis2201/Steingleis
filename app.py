@@ -2,18 +2,23 @@ import datetime
 import json
 import os
 import re
+import tempfile
 import urllib.parse
 from zoneinfo import ZoneInfo
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
+
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import altair as alt
 
 # ---------------------------------------------------------
-# ANWENDUNGS-VERSION & KONFIGURATION
+# ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -21,39 +26,73 @@ st.set_page_config(
     layout="wide"
 )
 
-# Zwingend für Streamlit Cloud: UTC-Serverzeit auf deutsche Zeit umrechnen
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
 def get_german_now() -> datetime.datetime:
-    """Liefert die exakte deutsche Ortszeit als naive datetime (für korrekte Berechnungen)."""
+    """Liefert die exakte deutsche Ortszeit ohne Tzinfo-Tags."""
     return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
 CONFIG_FILE = "config.json"
 STATION_NAME = "Neustadt(Weinstr)Hbf"
 
-DEFAULT_CONFIG = {
-    "refresh_interval_sec": 15,
-    "sound_alarm": True,
-    "sound_warn_sec": 45,
-    "track_through_trains": True,
-    "transit_ma_min": 16,
-    "transit_kl_min": 19,
-    "lead_dep": 240,
-    "lag_dep": 90,
-    "lead_arr": 160,
-    "lag_arr": 40,
-    "min_gap": 30
+# Schema für Typprüfung und Wertegrenzen (Audit-Fix 1)
+CONFIG_SCHEMA = {
+    "refresh_interval_sec": (int, 5, 120, 15),
+    "sound_alarm": (bool, None, None, True),
+    "sound_warn_sec": (int, 10, 180, 45),
+    "track_through_trains": (bool, None, None, True),
+    "transit_ma_min": (int, 5, 60, 16),
+    "transit_kl_min": (int, 5, 60, 19),
+    "lead_dep": (int, 0, 600, 240),
+    "lag_dep": (int, 0, 300, 90),
+    "lead_arr": (int, 0, 600, 160),
+    "lag_arr": (int, 0, 300, 40),
+    "min_gap": (int, 0, 300, 30)
 }
+
+DEFAULT_CONFIG = {k: v[3] for k, v in CONFIG_SCHEMA.items()}
+
+def validate_and_sanitize_config(raw_cfg: dict) -> dict:
+    """Validiert Typen und erzwingt gültige Wertebereiche."""
+    clean = {}
+    for key, (v_type, v_min, v_max, default_val) in CONFIG_SCHEMA.items():
+        val = raw_cfg.get(key, default_val)
+        try:
+            if v_type == bool:
+                clean[key] = bool(val)
+            elif v_type == int:
+                v = int(val)
+                if v_min is not None and v < v_min:
+                    v = v_min
+                elif v_max is not None and v > v_max:
+                    v = v_max
+                clean[key] = v
+        except (ValueError, TypeError):
+            clean[key] = default_val
+    return clean
 
 def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {**DEFAULT_CONFIG, **data}
+                return validate_and_sanitize_config(data)
         except Exception:
-            return DEFAULT_CONFIG
-    return DEFAULT_CONFIG
+            return DEFAULT_CONFIG.copy()
+    return DEFAULT_CONFIG.copy()
+
+def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
+    """Schreibt die Konfiguration atomar über eine Zwischendatei (Audit-Fix 1)."""
+    try:
+        clean_cfg = validate_and_sanitize_config(cfg)
+        dir_name = os.path.dirname(os.path.abspath(filepath))
+        with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
+            json.dump(clean_cfg, tf, indent=2)
+            temp_name = tf.name
+        os.replace(temp_name, filepath)
+        return True
+    except Exception:
+        return False
 
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
@@ -79,11 +118,32 @@ else:
         return wrapper
 
 # ---------------------------------------------------------
-# CLOUD-SICHERER AUDIO-ALARM
+# HTTP-SESSION MIT RETRY & POOLING (Audit-Fix 4 & 5)
+# ---------------------------------------------------------
+@st.cache_resource
+def get_http_session() -> requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=2,
+        backoff_factor=0.3,
+        status_forcelist=[500, 502, 503, 504],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+# ---------------------------------------------------------
+# SANDBOXED AUDIO-ALARM (Audit-Fix 2)
 # ---------------------------------------------------------
 def play_sound_cloud():
-    """Führt die Web Audio API isoliert aus, ohne Cross-Origin-Sicherheitsregeln zu verletzen."""
+    """Führt den Audio-Synthesizer in einem isolierten Iframe aus."""
     js_code = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Sound</title></head>
+    <body style="margin:0; padding:0; overflow:hidden;">
     <script>
     (function() {
         try {
@@ -110,11 +170,10 @@ def play_sound_cloud():
         } catch(e) {}
     })();
     </script>
+    </body>
+    </html>
     """
-    if hasattr(st, "html"):
-        st.html(js_code)
-    else:
-        st.markdown(js_code, unsafe_allow_html=True)
+    components.html(js_code, height=0, width=0)
 
 # ---------------------------------------------------------
 # HILFSFUNKTIONEN & FILTER
@@ -146,7 +205,7 @@ def extract_station_names(route_list) -> List[str]:
             names.append(entry)
     return names
 
-def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = None) -> datetime.datetime:
+def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = None) -> Optional[datetime.datetime]:
     if not time_val:
         return None
     match = re.search(r'(\d{1,2}):(\d{2})', str(time_val).strip())
@@ -163,6 +222,7 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
         except Exception:
             pass
 
+    # Robuste Mitternachtskorrektur relative zur gewählten Referenzzeit
     if dt < ref - datetime.timedelta(hours=6):
         dt += datetime.timedelta(days=1)
     elif dt > ref + datetime.timedelta(hours=18):
@@ -170,8 +230,9 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
 
     return dt
 
-def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], str]:
-    headers = {"User-Agent": "Streamlit-Steingleis-Monitor-Cloud"}
+def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    session = get_http_session()
+    headers = {"User-Agent": "Streamlit-Steingleis-Monitor/0.1.1"}
     safe_station = urllib.parse.quote(station_name)
     url = f"https://dbf.finalrewind.org/{safe_station}.json?version=3"
     if mode == "arr":
@@ -180,37 +241,43 @@ def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = T
         url += "&rt=0"
 
     try:
-        resp = requests.get(url, headers=headers, timeout=6)
+        resp = session.get(url, headers=headers, timeout=6)
         resp.raise_for_status()
         data = resp.json()
         if "error" in data and data["error"]:
-            return [], f"API: {data['error']}"
-        return data.get("departures", []), ""
+            return [], f"API-Fehler ({station_name}): {data['error']}"
+        return data.get("departures", []), None
     except Exception as e:
-        return [], f"Verbindungsfehler: {e}"
+        return [], f"Verbindungsfehler ({station_name}): {e}"
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_cached_neighbor_board(station_name: str) -> List[Dict[str, Any]]:
-    data, _ = fetch_dbf_board(station_name, mode="dep", use_realtime=True)
-    return data
+def fetch_cached_neighbor_board(station_name: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    return fetch_dbf_board(station_name, mode="dep", use_realtime=True)
 
-def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
+def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -> Tuple[list, list, list]:
+    """Ermittelt alle Schließungsintervalle und gibt gesammelte API-Fehler zurück (Audit-Fix 4)."""
     cfg = st.session_state.cfg
-    lead_dep = int(cfg["lead_dep"])
-    lag_dep = int(cfg["lag_dep"])
-    lead_arr = int(cfg["lead_arr"])
-    lag_arr = int(cfg["lag_arr"])
-    track_through = bool(cfg["track_through_trains"])
-    transit_ma = int(cfg["transit_ma_min"])
-    transit_kl = int(cfg["transit_kl_min"])
+    lead_dep = cfg["lead_dep"]
+    lag_dep = cfg["lag_dep"]
+    lead_arr = cfg["lead_arr"]
+    lag_arr = cfg["lag_arr"]
+    track_through = cfg["track_through_trains"]
+    transit_ma = cfg["transit_ma_min"]
+    transit_kl = cfg["transit_kl_min"]
 
     raw_intervals = []
     zugliste = []
     seen_events = set()
     neustadt_train_numbers = set()
+    api_errors = []
 
-    dep_data, _ = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime)
-    arr_data, _ = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime)
+    dep_data, dep_err = fetch_dbf_board(STATION_NAME, mode="dep", use_realtime=use_realtime)
+    arr_data, arr_err = fetch_dbf_board(STATION_NAME, mode="arr", use_realtime=use_realtime)
+
+    if dep_err:
+        api_errors.append(dep_err)
+    if arr_err:
+        api_errors.append(arr_err)
 
     # 1. Abfahrten ab Neustadt (nach Westen)
     for tr in dep_data:
@@ -311,10 +378,13 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
 
     # 3. Durchfahrten (ICE/TGV)
     if track_through:
-        ma_dep_data = fetch_cached_neighbor_board("Mannheim Hbf")
-        kl_dep_data = fetch_cached_neighbor_board("Kaiserslautern Hbf")
+        ma_dep_data, ma_err = fetch_cached_neighbor_board("Mannheim Hbf")
+        kl_dep_data, kl_err = fetch_cached_neighbor_board("Kaiserslautern Hbf")
+        if ma_err:
+            api_errors.append(ma_err)
+        if kl_err:
+            api_errors.append(kl_err)
 
-        # 3.1 Mannheim -> West
         for tr in ma_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
                 continue
@@ -324,10 +394,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
 
             matches_west = any(kw in dest.lower() for kw in WEST_BOUND_DESTS) or \
                            any(any(kw in s.lower() for kw in WEST_BOUND_DESTS) for s in route_stops)
-            if not matches_west:
-                continue
-
-            if any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
+            if not matches_west or any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
                 continue
 
             train_name = clean_train_name(tr)
@@ -360,7 +427,6 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
                         "_start_dt": start
                     })
 
-        # 3.2 Kaiserslautern -> Ost
         for tr in kl_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"):
                 continue
@@ -370,10 +436,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
 
             matches_east = any(kw in dest.lower() for kw in EAST_BOUND_DESTS) or \
                            any(any(kw in s.lower() for kw in EAST_BOUND_DESTS) for s in route_stops)
-            if not matches_east:
-                continue
-
-            if any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
+            if not matches_east or any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
                 continue
 
             train_name = clean_train_name(tr)
@@ -407,7 +470,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime):
                     })
 
     zugliste = sorted(zugliste, key=lambda x: x["_start_dt"])
-    return raw_intervals, zugliste
+    return raw_intervals, zugliste, api_errors
 
 def merge_intervals(intervals, min_gap_sec: int):
     if not intervals:
@@ -480,7 +543,6 @@ with st.sidebar:
     active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
 
-    # Modus & Zeit (nur auf der Monitor-Seite anzeigen)
     if active_page == "🚦 Monitor":
         st.subheader("Modus & Zeit")
         modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
@@ -492,19 +554,22 @@ with st.sidebar:
                 f"🔄 Auto-Refresh ({st.session_state.cfg.get('refresh_interval_sec', 15)}s)", 
                 value=True
             )
-            plan_selected_time = None
+            plan_selected_dt = None
         else:
             use_realtime = False
             auto_refresh = False
             st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
-            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_german.time())
+            # Audit-Fix 3: Datum + Uhrzeit gemeinsam erfassen
+            col_d, col_t = st.columns(2)
+            sel_date = col_d.date_input("Datum:", value=now_german.date())
+            sel_time = col_t.time_input("Uhrzeit:", value=now_german.time())
+            plan_selected_dt = datetime.datetime.combine(sel_date, sel_time)
 
         st.caption(f"🕒 Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
 
         if st.button("🔄 Jetzt aktualisieren", width="stretch"):
             st.rerun()
 
-    # Footer ganz unten in der Sidebar
     st.markdown('<div style="flex-grow: 1;"></div>', unsafe_allow_html=True)
     with st.container():
         st.markdown("---")
@@ -532,19 +597,18 @@ if active_page == "🚦 Monitor":
     @fragment_dec(run_every=refresh_interval)
     def render_live_dashboard():
         current_time_tick = get_german_now()
-        
-        if use_realtime:
-            calc_base_dt = current_time_tick
-        else:
-            calc_base_dt = current_time_tick.replace(
-                hour=plan_selected_time.hour, 
-                minute=plan_selected_time.minute, 
-                second=0
-            )
+        calc_base_dt = current_time_tick if use_realtime else plan_selected_dt
 
-        raw_intervals, zugliste = get_steingleis_events(use_realtime, calc_base_dt)
+        raw_intervals, zugliste, api_errors = get_steingleis_events(use_realtime, calc_base_dt)
         min_gap = int(st.session_state.cfg.get("min_gap", 30))
         merged = merge_intervals(raw_intervals, min_gap)
+
+        # Audit-Fix 4: Sichtbare Warnung bei API-Ausfällen
+        if api_errors:
+            with st.expander("⚠️ Verbindungswarnung zur Fahrplan-API", expanded=True):
+                for err in api_errors:
+                    st.warning(err)
+                st.caption("Aufgrund von Verbindungsstörungen können Schließungen fehlen.")
 
         is_closed = False
         current_start = None
@@ -563,7 +627,7 @@ if active_page == "🚦 Monitor":
                 if next_closure is None or start < next_closure[0]:
                     next_closure = (start, end, trains)
 
-        # Akustischer Alarm (cloud-sicher)
+        # Akustischer Alarm (cloud-sicher im isolierten Sandbox-Iframe)
         if use_realtime and st.session_state.cfg.get("sound_alarm", True):
             sound_warn_sec = int(st.session_state.cfg.get("sound_warn_sec", 45))
             should_alarm = False
@@ -579,20 +643,21 @@ if active_page == "🚦 Monitor":
             if should_alarm:
                 play_sound_cloud()
 
-        # Statuskacheln
-        st.title(f"🚦 BÜ Steingleis (Neustadt/Weinstraße)")
-        st.caption(f"🕒 Aktuelle Uhrzeit (MEZ/MESZ): **{current_time_tick.strftime('%H:%M:%S')} Uhr**")
+        # Titel & Header
+        st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
+        st.caption(f"🕒 Referenz-Zeitstempel: **{calc_base_dt.strftime('%d.%m.%Y %H:%M:%S')} Uhr**")
         col1, col2 = st.columns([1, 1])
 
         with col1:
-            sub_title = (
-                f"Live-Status (Jetzt)" 
-                if use_realtime 
-                else f"Status um {calc_base_dt.strftime('%H:%M')} Uhr (Plan)"
-            )
+            sub_title = "Live-Status (Jetzt)" if use_realtime else f"Status am {calc_base_dt.strftime('%d.%m. um %H:%M')} Uhr (Plan)"
             st.subheader(sub_title)
             
-            if is_closed:
+            # Audit-Fix 4: Fail-Safe Statusanzeige
+            if not zugliste and api_errors:
+                st.warning("### ⚠️ STATUS UNBEKANNT (KEINE DATEN)")
+                st.metric("Schrankenstatus", "Unbekannt", "API-Fehler")
+                st.caption("Die DB-Schnittstelle liefert keine Daten. Eine Freigabe kann nicht garantiert werden.")
+            elif is_closed:
                 st.error("### 🛑 SCHRANKE GESCHLOSSEN")
                 rest_sec = int((current_end - calc_base_dt).total_seconds())
                 st.metric("Geschlossen bis ca.", 
@@ -675,7 +740,6 @@ if active_page == "🚦 Monitor":
             )
             st.altair_chart(chart, width="stretch")
 
-        # Zugliste
         with st.expander(f"🔍 Alle erfassten Züge am Steingleis ({len(zugliste)} Fahrten)"):
             if zugliste:
                 df_display = pd.DataFrame(zugliste).drop(columns=["_start_dt"])
@@ -690,10 +754,9 @@ if active_page == "🚦 Monitor":
 # =========================================================
 elif active_page == "⚙️ Einstellungen":
     st.title("⚙️ Einstellungen & Parameter")
-    st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells, der Durchfahrten und der Signale. Änderungen wirken sofort.")
+    st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells. Änderungen wirken sofort.")
 
     cfg = st.session_state.cfg
-
     tab1, tab2, tab3 = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "🔔 Ton & Auto-Refresh"])
 
     with tab1:
@@ -720,7 +783,7 @@ elif active_page == "⚙️ Einstellungen":
 
         cfg["min_gap"] = st.slider(
             "Mindestöffnungslücke zwischen zwei Zügen (Sek.)", 0, 120, int(cfg.get("min_gap", 30)), step=10,
-            help="Ist die Zeit zwischen Öffnung und nächster Schließung kürzer als dieser Wert, bleibt die Schranke dauerhaft geschlossen."
+            help="Ist die Zeit zwischen Öffnung und nächster Schließung kürzer als dieser Wert, bleibt die Schranke geschlossen."
         )
 
     with tab2:
@@ -734,13 +797,11 @@ elif active_page == "⚙️ Einstellungen":
         col_ma, col_kl = st.columns(2)
         with col_ma:
             cfg["transit_ma_min"] = st.slider(
-                "Fahrzeit Mannheim Hbf -> BÜ Steingleis (Min.)", 10, 25, int(cfg.get("transit_ma_min", 16)), step=1,
-                help="Typische Reisezeit eines ICE/TGV durch die Rheinebene bis zum BÜ."
+                "Fahrzeit Mannheim Hbf -> BÜ Steingleis (Min.)", 10, 25, int(cfg.get("transit_ma_min", 16)), step=1
             )
         with col_kl:
             cfg["transit_kl_min"] = st.slider(
-                "Fahrzeit Kaiserslautern Hbf -> BÜ Steingleis (Min.)", 12, 30, int(cfg.get("transit_kl_min", 19)), step=1,
-                help="Typische Reisezeit eines ICE/TGV durch den Pfälzerwald bis zum BÜ."
+                "Fahrzeit Kaiserslautern Hbf -> BÜ Steingleis (Min.)", 12, 30, int(cfg.get("transit_kl_min", 19)), step=1
             )
 
     with tab3:
@@ -756,22 +817,22 @@ elif active_page == "⚙️ Einstellungen":
 
         with col_ref:
             cfg["refresh_interval_sec"] = st.slider(
-                "Auto-Refresh-Intervall (Sek.)", 10, 60, int(cfg.get("refresh_interval_sec", 15)), step=5,
-                help="Gibt an, wie oft das Live-Dashboard neue Daten von der DB abruft."
+                "Auto-Refresh-Intervall (Sek.)", 10, 60, int(cfg.get("refresh_interval_sec", 15)), step=5
             )
 
     st.markdown("---")
     col_save, col_reset = st.columns([1, 1])
     with col_save:
         if st.button("💾 Einstellungen als neuen Standard in config.json speichern", type="primary", width="stretch"):
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            st.success("✅ Einstellungen dauerhaft in config.json gespeichert!")
+            success = save_config_atomic(cfg)
+            if success:
+                st.success("✅ Einstellungen validiert und dauerhaft in config.json gespeichert!")
+            else:
+                st.error("❌ Fehler beim atomaren Speichern der Konfiguration.")
 
     with col_reset:
         if st.button("↩️ Auf Werkseinstellungen zurücksetzen", width="stretch"):
             st.session_state.cfg = DEFAULT_CONFIG.copy()
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=2)
+            save_config_atomic(DEFAULT_CONFIG)
             st.info("Werkseinstellungen wiederhergestellt.")
             st.rerun()
