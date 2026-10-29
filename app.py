@@ -18,7 +18,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.4cp"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -32,12 +32,11 @@ def get_german_now() -> datetime.datetime:
     """Liefert die exakte deutsche Ortszeit ohne Tzinfo-Tags."""
     return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
-# Robuster absoluter Dateipfad
+# Robuster absoluter Dateipfad (Audit-Fix 2 & 5)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATION_NAME = "Neustadt(Weinstr)Hbf"
 
-# Schema für Typprüfung, Wertegrenzen und Default-Werte
 CONFIG_SCHEMA = {
     # Taktung & API-Schonung
     "ui_refresh_sec": (int, 2, 30, 5),
@@ -59,28 +58,30 @@ CONFIG_SCHEMA = {
 
 DEFAULT_CONFIG = {k: v[3] for k, v in CONFIG_SCHEMA.items()}
 
-def parse_bool_value(val: Any, default: bool = True) -> bool:
-    """Parst bool-Werte robust aus bool, int oder Strings ('true', 'false', '0', etc.)."""
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val)
-    if isinstance(val, str):
-        v = val.strip().lower()
-        if v in ("true", "1", "yes", "y", "on", "ja", "wahr"):
+def parse_bool_value(value: Any, default: bool = False) -> bool:
+    """Robustes Parsen von Boolean-Konfigurationswerten aus JSON/Strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "ja"}:
             return True
-        if v in ("false", "0", "no", "n", "off", "nein", "falsch"):
+        if normalized in {"0", "false", "no", "n", "off", "nein", ""}:
             return False
-    return default
+    return bool(default)
 
 def validate_and_sanitize_config(raw_cfg: dict) -> dict:
-    """Validiert Typen und erzwingt gültige Wertebereiche."""
+    if not isinstance(raw_cfg, dict):
+        raw_cfg = {}
+
     clean = {}
     for key, (v_type, v_min, v_max, default_val) in CONFIG_SCHEMA.items():
         val = raw_cfg.get(key, default_val)
         try:
             if v_type == bool:
-                clean[key] = parse_bool_value(val, default_val)
+                clean[key] = parse_bool_value(val, bool(default_val))
             elif v_type == int:
                 v = int(val)
                 if v_min is not None and v < v_min:
@@ -118,7 +119,7 @@ def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
 
-# Alarm-Entprellung: Merker für bereits signalisierte Schließung
+# Alarm-Entprellung (Audit-Fix 3: Nur 1x pro Schließungs-Event gongen)
 if "last_alarmed_closure" not in st.session_state:
     st.session_state.last_alarmed_closure = None
 
@@ -250,20 +251,11 @@ def clean_train_name(tr: dict) -> str:
 
     return raw if raw else "Zug"
 
-def is_neustadt_hbf(name: str) -> bool:
-    """Prüft, ob der Stationsname Neustadt Hbf meint (schließt Böbig und Süd aus)."""
-    if not name:
-        return False
-    n = name.lower()
-    if "böbig" in n or "boebig" in n or "süd" in n or "sued" in n:
-        return False
-    return "neustadt" in n
-
 def extract_station_names(route_list) -> List[str]:
     names = []
-    for entry in route_list:
+    for entry in route_list or []:
         if isinstance(entry, dict):
-            names.append(entry.get("name", ""))
+            names.append(str(entry.get("name", "") or ""))
         elif isinstance(entry, str):
             names.append(entry)
     return names
@@ -291,6 +283,14 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
         dt -= datetime.timedelta(days=1)
 
     return dt
+
+def int_or_default(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 @st.cache_data(show_spinner=False)
 def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, time_bucket: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
@@ -352,13 +352,13 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
         dest = tr.get("destination") or tr.get("direction") or ""
         route_stops = extract_station_names(tr.get("route", []))
 
-        # Stationen nach Neustadt Hbf ermitteln (Präzise Bahnhofserkennung)
         post_stops = []
         found_neustadt = False
         for s in route_stops:
+            s_lower = str(s).lower()
             if found_neustadt:
                 post_stops.append(s)
-            elif is_neustadt_hbf(s):
+            elif "neustadt" in s_lower:
                 found_neustadt = True
         if not found_neustadt:
             post_stops = route_stops
@@ -369,7 +369,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
         if is_west:
             train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
-            delay = int(tr.get("delayDeparture", 0)) if use_realtime else 0
+            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
 
             num_match = re.search(r'\d+', train_name)
             if num_match:
@@ -385,7 +385,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
                     info = f"Abfahrt: {train_name} -> {dest}"
                     raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
                         "Richtung": "➡️ Abfahrt (nach Westen)",
                         "Zug": train_name,
@@ -404,7 +404,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
         route_stops = extract_station_names(tr.get("route", []))
         pre_stops = []
         for s in route_stops:
-            if is_neustadt_hbf(s):
+            s_lower = str(s).lower()
+            if "neustadt" in s_lower:
                 break
             pre_stops.append(s)
 
@@ -415,7 +416,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
         if is_from_west:
             train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time")
-            delay = int(tr.get("delayArrival", 0)) if use_realtime else 0
+            delay = int_or_default(tr.get("delayArrival", 0), 0) if use_realtime else 0
 
             num_match = re.search(r'\d+', train_name)
             if num_match:
@@ -432,7 +433,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                     herkunft = origin if origin else "Pfälzerwald"
                     info = f"Ankunft: {train_name} aus {herkunft}"
                     raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
                         "Richtung": "⬅️ Ankunft (aus Westen)",
                         "Zug": train_name,
@@ -442,7 +443,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                         "_start_dt": start
                     })
 
-    # 3. Durchfahrten (ICE/TGV)
+    # 3. Durchfahrten (ICE/TGV) - Audit-Fix 1: use_realtime sauber weiterreichen
     if track_through:
         ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
         kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
@@ -460,7 +461,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
             matches_west = any(kw in dest.lower() for kw in WEST_BOUND_DESTS) or \
                            any(any(kw in s.lower() for kw in WEST_BOUND_DESTS) for s in route_stops)
-            if not matches_west or any(is_neustadt_hbf(s) for s in route_stops) or "neustadt" in dest.lower():
+            if not matches_west or any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
                 continue
 
             train_name = clean_train_name(tr)
@@ -469,7 +470,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                 continue
 
             sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
-            delay = int(tr.get("delayDeparture", 0)) if use_realtime else 0
+            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
 
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
@@ -483,7 +484,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
                     info = f"Durchfahrt: {train_name} -> {dest}"
                     raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
                         "Richtung": "➡️ Durchfahrt (nach Westen)",
                         "Zug": train_name,
@@ -502,7 +503,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
             matches_east = any(kw in dest.lower() for kw in EAST_BOUND_DESTS) or \
                            any(any(kw in s.lower() for kw in EAST_BOUND_DESTS) for s in route_stops)
-            if not matches_east or any(is_neustadt_hbf(s) for s in route_stops) or "neustadt" in dest.lower():
+            if not matches_east or any("neustadt" in s.lower() for s in route_stops) or "neustadt" in dest.lower():
                 continue
 
             train_name = clean_train_name(tr)
@@ -511,7 +512,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                 continue
 
             sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time")
-            delay = int(tr.get("delayDeparture", 0)) if use_realtime else 0
+            delay = int_or_default(tr.get("delayDeparture", 0), 0) if use_realtime else 0
 
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
@@ -525,7 +526,7 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
                     info = f"Durchfahrt: {train_name} -> {dest}"
                     raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    delay_str = f" (+{delay})" if (use_realtime and delay) else ""
                     zugliste.append({
                         "Richtung": "⬅️ Durchfahrt (aus Westen)",
                         "Zug": train_name,
@@ -698,30 +699,23 @@ if active_page == "🚦 Monitor":
                 if next_closure is None or start < next_closure[0]:
                     next_closure = (start, end, trains)
 
-        # Akustischer Alarm (Entprellt: gezielte Prüfung auf Eintritt in das Vorwarnfenster)
+        # Akustischer Alarm (Audit-Fix 3: Entprellt - nur 1x pro Schließung)
         if use_realtime and st.session_state.cfg.get("sound_alarm", True):
             sound_warn_sec = int(st.session_state.cfg.get("sound_warn_sec", 45))
             if next_closure:
                 s_next = next_closure[0]
-                closure_id = f"NEXT_{s_next.strftime('%Y%m%d%H%M%S')}"
+                closure_id = s_next.strftime("%Y-%m-%d %H:%M:%S")
                 sec_to_next = (s_next - calc_base_dt).total_seconds()
-                
-                if 0 < sec_to_next <= sound_warn_sec:
-                    if st.session_state.last_alarmed_closure != closure_id:
-                        st.session_state.last_alarmed_closure = closure_id
-                        play_sound_cloud()
-                elif sec_to_next > sound_warn_sec + 30:
-                    # Verschiebung / Verspätung: Merker zurücksetzen, falls Event nach hinten rutscht
-                    if st.session_state.last_alarmed_closure == closure_id:
-                        st.session_state.last_alarmed_closure = None
-
+                if 0 < sec_to_next <= sound_warn_sec and st.session_state.last_alarmed_closure != closure_id:
+                    st.session_state.last_alarmed_closure = closure_id
+                    play_sound_cloud()
             elif is_closed and current_start:
-                closure_id = f"CURR_{current_start.strftime('%Y%m%d%H%M%S')}"
+                closure_id = current_start.strftime("%Y-%m-%d %H:%M:%S")
                 sec_since_start = (calc_base_dt - current_start).total_seconds()
                 if 0 <= sec_since_start <= 15 and st.session_state.last_alarmed_closure != closure_id:
                     st.session_state.last_alarmed_closure = closure_id
                     play_sound_cloud()
-            else:
+            elif not next_closure and not is_closed:
                 st.session_state.last_alarmed_closure = None
 
         col1, col2 = st.columns([1, 1])
@@ -753,7 +747,7 @@ if active_page == "🚦 Monitor":
                               f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
                     st.caption(f"Nächster Zug: {tr_next[0]}")
                 else:
-                    st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
+                    st.info("Im analysierten Zeitfenster stehen keine Schießungen an.")
 
         with col2:
             st.subheader("📋 Prognostizierte Schließphasen")
@@ -833,6 +827,7 @@ elif active_page == "⚙️ Einstellungen":
     st.title("⚙️ Einstellungen & Parameter")
     st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells, der Taktung und der API-Caches.")
 
+    # Audit-Fix 4: Sichtbare Warnung bei beschädigter Konfiguration
     if st.session_state.get("config_load_error"):
         st.warning("⚠️ Die gespeicherte `config.json` war fehlerhaft/unlesbar und wurde temporär durch Standardwerte ersetzt.")
 
@@ -870,7 +865,7 @@ elif active_page == "⚙️ Einstellungen":
         st.subheader("Fernverkehrs-Laufzeitüberwachung (KBS 670)")
         cfg["track_through_trains"] = st.toggle(
             "ICE- und TGV-Durchfahrten ohne Halt in Neustadt erfassen",
-            value=bool(cfg.get("track_through_trains", True)),
+            value=parse_bool_value(cfg.get("track_through_trains", True), True),
             help="Überwacht die Nachbarknoten Mannheim Hbf und Kaiserslautern Hbf auf Züge Richtung Paris / Frankfurt."
         )
 
@@ -909,7 +904,10 @@ elif active_page == "⚙️ Einstellungen":
         st.subheader("🔔 Akustische Warnung")
         col_snd1, col_snd2 = st.columns(2)
         with col_snd1:
-            cfg["sound_alarm"] = st.toggle("Schrankengong aktivieren", value=bool(cfg.get("sound_alarm", True)))
+            cfg["sound_alarm"] = st.toggle(
+                "Schrankengong aktivieren",
+                value=parse_bool_value(cfg.get("sound_alarm", True), True)
+            )
             cfg["sound_warn_sec"] = st.slider(
                 "Vorwarnzeit vor Schließung (Sek.)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5
             )
