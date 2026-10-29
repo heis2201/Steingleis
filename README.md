@@ -4,6 +4,8 @@ Eine in Python und [Streamlit](https://streamlit.io/) geschriebene Web-Applikati
 
 Das Tool ruft über die [DBF-API](https://dbf.finalrewind.org/) Live-Fahrplandaten ab, berechnet anhand konfigurierbarer Vor- und Nachlaufzeiten die Schließphasen des Bahnübergangs und visualisiert diese in einem interaktiven Dashboard inklusive 60-Minuten-Zeitstrahl.
 
+Aktuell als Testinstanz verfügbar unter [Steingleis.streamlit.app](https://steingleis.streamlit.app)
+
 ## 📑 Inhaltsverzeichnis
 - [✨ Features](#-features)
 - [🚀 Installation & Betrieb](#-installation--betrieb)
