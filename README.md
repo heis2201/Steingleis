@@ -21,6 +21,7 @@ Das Tool ruft über die [DBF-API](https://dbf.finalrewind.org/) Live-Fahrplandat
 * **Visueller Zeitstrahl:** Eine grafische Übersicht der nächsten 60 Minuten mit 5-Minuten-Taktraster.
 * **Akustische Vorwarnung:** Ein im Browser autark laufender Schrankengong warnt konfigurierbare X Sekunden vor einer bevorstehenden Schließung.
 * **Dynamische Stellwerks-Parameter:** Alle Vorlauf- und Nachlaufzeiten für Ankünfte, Abfahrten und Durchfahrten können live über das Einstellungs-Menü angepasst und in der `config.json` dauerhaft gesichert werden.
+* 🚉 **Authentische DB-Bahnhofstafel**: Ein komplett neues Dashboard im Design der digitalen Fahrgastinformationsanlagen (FIA) der DB. Inklusive Filter für Züge, die über den BÜ Steingleis fahren, Gleisanzeigen und gelben Störungsmeldungen.
 
 ---
 
