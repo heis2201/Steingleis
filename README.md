@@ -89,6 +89,9 @@ Wichtige Parameter:
 * **Web Audio API** (Browser-nativer Sound-Generator, keine `.mp3` Dateien nötig)
 
 ## 📄 Lizenz & Haftungsausschluss
+
+Dieses Projekt steht unter der **[MIT Lizenz](LICENSE)**.
+
 Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. 
 Die Schließzeiten basieren ausschließlich auf mathematischen Prognosen des Personenverkehrs – Güterzüge und Sonderfahrten lösen unangekündigte Schließungen aus.
 
