@@ -476,22 +476,54 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list,
 with st.sidebar:
     st.title("🚦 BÜ Steingleis")
     st.caption(f"App-Version {APP_VERSION}")
+    
     active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
-    
-    # Footer in Sidebar
-    st.markdown(
-        """
-        <div style="margin-top: auto; font-size: 0.8em; color: #888;">
-            <a href="https://github.com/heis2201/Steingleis/blob/main/README.md" target="_blank" style="color: #888; text-decoration: none;">📄 Dokumentation (README)</a><br>
-            <a href="https://github.com/heis2201/Steingleis/blob/main/LICENSE" target="_blank" style="color: #888; text-decoration: none;">⚖️ MIT Lizenz</a><br>
-            <br>
-            <em>Prognosen ohne Gewähr.<br>Güterzüge nicht erfasst.</em>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
 
+    # Modus & Zeit (wird nur angezeigt, wenn "Monitor" aktiv ist)
+    if active_page == "🚦 Monitor":
+        st.subheader("Modus & Zeit")
+        modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
+        now_german = get_german_now()
+
+        if modus == "🔴 Live-Echtzeit (Jetzt)":
+            use_realtime = True
+            auto_refresh = st.toggle(
+                f"🔄 Auto-Refresh ({st.session_state.cfg.get('refresh_interval_sec', 15)}s)", 
+                value=True
+            )
+            plan_selected_time = None
+        else:
+            use_realtime = False
+            auto_refresh = False
+            st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
+            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_german.time())
+
+        st.caption(f"🕒 Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
+
+        if st.button("🔄 Jetzt aktualisieren", width="stretch"):
+            st.rerun()
+
+    # Platzhalter nach unten und fester Footer am Ende der Sidebar
+    # (HTML sorgt für den automatischen Schubs nach ganz unten)
+    st.markdown('<div style="flex-grow: 1;"></div>', unsafe_allow_html=True)
+    
+    with st.container():
+        st.markdown("---")
+        st.markdown(
+            """
+            <div style="font-size: 0.85em; color: #888; line-height: 1.6;">
+                <a href="https://github.com/heis2201/Steingleis/blob/main/README.md" target="_blank" style="color: #666; text-decoration: none;">📄 Dokumentation (README)</a><br>
+                <a href="https://github.com/heis2201/Steingleis/blob/main/LICENSE" target="_blank" style="color: #666; text-decoration: none;">⚖️ MIT Lizenz</a><br>
+                <br>
+                <span style="font-style: italic; font-size: 0.9em; color: #aaa;">
+                    Prognosen ohne Gewähr.<br>
+                    Güterzüge nicht erfasst.
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 # =========================================================
 # SEITE 1: MONITOR
