@@ -18,7 +18,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.4b"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -32,7 +32,9 @@ def get_german_now() -> datetime.datetime:
     """Liefert die exakte deutsche Ortszeit ohne Tzinfo-Tags."""
     return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
-CONFIG_FILE = "config.json"
+# Robuster absoluter Dateipfad (Audit-Fix 2 & 5)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATION_NAME = "Neustadt(Weinstr)Hbf"
 
 CONFIG_SCHEMA = {
@@ -81,6 +83,8 @@ def load_config() -> dict:
                 data = json.load(f)
                 return validate_and_sanitize_config(data)
         except Exception:
+            # Audit-Fix 4: Fehler dokumentieren statt stillschweigend ignorieren
+            st.session_state["config_load_error"] = True
             return DEFAULT_CONFIG.copy()
     return DEFAULT_CONFIG.copy()
 
@@ -98,6 +102,10 @@ def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
 
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
+
+# Alarm-Entprellung (Audit-Fix 3: Nur 1x pro Schließungs-Event gongen)
+if "last_alarmed_closure" not in st.session_state:
+    st.session_state.last_alarmed_closure = None
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -140,10 +148,10 @@ def get_http_session() -> requests.Session:
 # CLIENT-SEITIGE LIVE-UHR (FÜR DIE SIDEBAR)
 # ---------------------------------------------------------
 def render_sidebar_clock():
-    """Zeigt eine kontinuierlich im Browser laufende Uhrzeit in der Sidebar an."""
+    """Zeigt eine kontinuierlich im Browser laufende Uhrzeit im Sans-Serif-Font an."""
     clock_html = """
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 0.875rem; color: #555; padding: 2px 0 6px 0;">
-        🕒 Aktuelle Uhrzeit: <span id="live-clock" style="color: #111;">--:--:-- Uhr</span>
+        🕒 Aktuelle Uhrzeit: <span id="live-clock" style="color: #555;">--:--:-- Uhr</span>
     </div>
     <script>
     (function() {
@@ -409,10 +417,10 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
                         "_start_dt": start
                     })
 
-    # 3. Durchfahrten (ICE/TGV)
+    # 3. Durchfahrten (ICE/TGV) - Audit-Fix 1: use_realtime sauber weiterreichen
     if track_through:
-        ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=True, is_neighbor=True)
-        kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=True, is_neighbor=True)
+        ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
+        kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
         if ma_err:
             api_errors.append(ma_err)
         if kl_err:
@@ -665,21 +673,24 @@ if active_page == "🚦 Monitor":
                 if next_closure is None or start < next_closure[0]:
                     next_closure = (start, end, trains)
 
-        # Akustischer Alarm (cloud-sicher im isolierten Sandbox-Iframe)
+        # Akustischer Alarm (Audit-Fix 3: Entprellt - nur 1x pro Schließung)
         if use_realtime and st.session_state.cfg.get("sound_alarm", True):
             sound_warn_sec = int(st.session_state.cfg.get("sound_warn_sec", 45))
-            should_alarm = False
             if next_closure:
-                sec_to_next = (next_closure[0] - calc_base_dt).total_seconds()
-                if 0 < sec_to_next <= sound_warn_sec:
-                    should_alarm = True
+                s_next = next_closure[0]
+                closure_id = s_next.strftime("%Y-%m-%d %H:%M:%S")
+                sec_to_next = (s_next - calc_base_dt).total_seconds()
+                if 0 < sec_to_next <= sound_warn_sec and st.session_state.last_alarmed_closure != closure_id:
+                    st.session_state.last_alarmed_closure = closure_id
+                    play_sound_cloud()
             elif is_closed and current_start:
+                closure_id = current_start.strftime("%Y-%m-%d %H:%M:%S")
                 sec_since_start = (calc_base_dt - current_start).total_seconds()
-                if 0 <= sec_since_start <= 15:
-                    should_alarm = True
-
-            if should_alarm:
-                play_sound_cloud()
+                if 0 <= sec_since_start <= 15 and st.session_state.last_alarmed_closure != closure_id:
+                    st.session_state.last_alarmed_closure = closure_id
+                    play_sound_cloud()
+            elif not next_closure and not is_closed:
+                st.session_state.last_alarmed_closure = None
 
         col1, col2 = st.columns([1, 1])
 
@@ -790,6 +801,10 @@ elif active_page == "⚙️ Einstellungen":
     st.title("⚙️ Einstellungen & Parameter")
     st.caption(f"Version {APP_VERSION} • Konfiguration des Stellwerksmodells, der Taktung und der API-Caches.")
 
+    # Audit-Fix 4: Sichtbare Warnung bei beschädigter Konfiguration
+    if st.session_state.get("config_load_error"):
+        st.warning("⚠️ Die gespeicherte `config.json` war fehlerhaft/unlesbar und wurde temporär durch Standardwerte ersetzt.")
+
     cfg = st.session_state.cfg
     tab1, tab2, tab3 = st.tabs(["🛠️ Stellwerks-Parameter", "🚄 Fernverkehr & Durchfahrten", "⏱️ Taktung, API & Audio"])
 
@@ -877,6 +892,7 @@ elif active_page == "⚙️ Einstellungen":
         if st.button("💾 Einstellungen als neuen Standard in config.json speichern", type="primary", width="stretch"):
             success = save_config_atomic(cfg)
             if success:
+                st.session_state["config_load_error"] = False
                 st.success("✅ Einstellungen validiert und dauerhaft in config.json gespeichert!")
             else:
                 st.error("❌ Fehler beim atomaren Speichern der Konfiguration.")
@@ -885,5 +901,6 @@ elif active_page == "⚙️ Einstellungen":
         if st.button("↩️ Auf Werkseinstellungen zurücksetzen", width="stretch"):
             st.session_state.cfg = DEFAULT_CONFIG.copy()
             save_config_atomic(DEFAULT_CONFIG)
+            st.session_state["config_load_error"] = False
             st.info("Werkseinstellungen wiederhergestellt.")
             st.rerun()
