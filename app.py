@@ -143,7 +143,7 @@ def render_sidebar_clock():
     """Zeigt eine kontinuierlich im Browser laufende Uhrzeit in der Sidebar an."""
     clock_html = """
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 0.875rem; color: #555; padding: 2px 0 6px 0;">
-        🕒 Aktuelle Uhrzeit: <strong id="live-clock" style="color: #111;">--:--:-- Uhr</strong>
+        🕒 Aktuelle Uhrzeit: <span id="live-clock" style="color: #111;">--:--:-- Uhr</span>
     </div>
     <script>
     (function() {
