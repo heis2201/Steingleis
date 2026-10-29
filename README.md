@@ -1,99 +1,86 @@
 # 🚦 BÜ Steingleis Monitor
 
-Eine in Python und [Streamlit](https://streamlit.io/) geschriebene Web-Applikation zur Echtzeit-Überwachung und Prognose von Schrankenschließzeiten am Bahnübergang "Steingleis" in Neustadt an der Weinstraße (KBS 670).
+Ein intelligentes Streamlit-Dashboard zur Echtzeit-Überwachung und Prognose von Schrankenschließzeiten am Bahnübergang „Steingleis“ in Neustadt an der Weinstraße (KBS 670 / Pfälzerwald-Korridor).
 
-Das Tool ruft über die [DBF-API](https://dbf.finalrewind.org/) Live-Fahrplandaten ab, berechnet anhand konfigurierbarer Vor- und Nachlaufzeiten die Schließphasen des Bahnübergangs und visualisiert diese in einem interaktiven Dashboard inklusive 60-Minuten-Zeitstrahl.
+## 📌 Über das Projekt
 
-## 📑 Inhaltsverzeichnis
-- [✨ Features](#-features)
-- [🚀 Installation & Betrieb](#-installation--betrieb)
-  - [1. Lokal (Windows / macOS / Linux)](#1-lokal-windows--macos--linux)
-  - [2. Docker / Raspberry Pi](#2-docker--raspberry-pi)
-  - [3. Streamlit Community Cloud](#3-streamlit-community-cloud)
-- [⚙️ Konfiguration (`config.json`)](#️-konfiguration-configjson)
-- [🛠️ Verwendete Technologien](#️-verwendete-technologien)
-- [📄 Lizenz & Haftungsausschluss](#-lizenz--haftungsausschluss)
+Der **BÜ Steingleis Monitor** greift auf Live-Fahrplandaten der Deutschen Bahn (via [DBF / finalrewind.org](https://dbf.finalrewind.org/)) zu und berechnet anhand eines einstellbaren Stellwerksmodells (Vor- und Nachlaufzeiten) auf die Sekunde genau, wann und wie lange die Schranken am Bahnübergang geschlossen bleiben.
 
-## ✨ Features
+### ✨ Neue Features in v0.2.0
 
-* **Echtzeit-Dashboard & Fahrplan-Modus:** Anzeige des aktuellen BÜ-Status (Offen / Geschlossen) oder Analyse eines beliebigen Zeitfensters in der Zukunft/Vergangenheit.
-* **Intelligente Fernverkehrs-Erkennung:** Da durchfahrende ICE- und TGV-Züge nicht im Neustadter Fahrplan auftauchen, überwacht die App parallel die Abfahrten in **Mannheim Hbf** und **Kaiserslautern Hbf**. Durch Laufzeit-Interpolation (z. B. +16 Min ab Mannheim) werden Schließungen für Durchfahrten prognostiziert.
-* **Visueller Zeitstrahl:** Eine grafische Übersicht der nächsten 60 Minuten mit 5-Minuten-Taktraster.
-* **Akustische Vorwarnung:** Ein im Browser autark laufender Schrankengong warnt konfigurierbare X Sekunden vor einer bevorstehenden Schließung.
-* **Dynamische Stellwerks-Parameter:** Alle Vorlauf- und Nachlaufzeiten für Ankünfte, Abfahrten und Durchfahrten können live über das Einstellungs-Menü angepasst und in der `config.json` dauerhaft gesichert werden.
-* 🚉 **Authentische DB-Bahnhofstafel**: Ein komplett neues Dashboard im Design der digitalen Fahrgastinformationsanlagen (FIA) der DB. Inklusive Filter für Züge, die über den BÜ Steingleis fahren, Gleisanzeigen und gelben Störungsmeldungen.
+* **🚉 Authentische DB-Bahnhofstafel:** Ein komplett neues Dashboard im Design der digitalen Fahrgastinformationsanlagen (FIA) der DB. Inklusive Filter für Züge, die über den BÜ Steingleis fahren, Gleisanzeigen und gelben Störungsmeldungen.
 
----
+* **🛡️ API-Schutz & Entkopplung:** UI-Rendering (alle 5s lokal) und Netzwerkabrufe (alle 60-120s aus dem Cache) sind nun vollständig getrennt, um die API-Server massiv zu entlasten.
 
-## 🚀 Installation & Betrieb
+* **🔔 Entprellter Audio-Alarm:** Der akustische Schrankengong ertönt nun zuverlässig exakt **einmal** pro Schließphase, selbst wenn sich Züge kurzfristig verspäten.
 
-Die Anwendung kann auf drei verschiedene Arten betrieben werden:
+* **🕒 Native Live-Uhr:** Eine flüssige, systemnative Sekunden-Uhr in der Sidebar (ohne Python-Reruns).
 
-### 1. Lokal (Windows / macOS / Linux)
+## 🚀 Funktionen
 
-Voraussetzung: Python 3.9 oder höher.
+1. **🔴 Live-Echtzeit & 📅 Plan-Analyse**
 
-```bash
-# Repository klonen
-git clone https://github.com/heis2201/Steingleis.git
-cd Steingleis
+   * Verfolge den Bahnübergang live inklusive aller aktuellen Verspätungen.
 
-# Abhängigkeiten installieren
-pip install -r requirements.txt
+   * Modus *„Fahrplan-Analyse“*: Wähle ein beliebiges Datum/Uhrzeit, um den reinen Soll-Fahrplan (ohne Live-Abweichungen) zu simulieren.
 
-# App starten
-python -m streamlit run app.py
-```
-Die App ist danach unter `http://localhost:8501` im Browser erreichbar.
+2. **🚄 Fernverkehrs-Erfassung**
 
-### 2. Docker / Raspberry Pi
-Ideal für den Betrieb auf einem lokalen Homeserver oder Raspberry Pi.
-```bash
+   * Durchfahrende ICE/TGV-Züge halten nicht in Neustadt. Die App überwacht automatisch die Nachbarknoten **Mannheim Hbf** und **Kaiserslautern Hbf** und errechnet die Durchfahrtszeiten am Steingleis.
 
-# Klonen und in das Verzeichnis wechseln
-git clone https://github.com/heis2201/Steingleis.git
-cd Steingleis
+3. **⚙️ Konfigurierbares Stellwerksmodell**
 
-# Container bauen und im Hintergrund starten
-docker compose up -d --build
-```
-Die App läuft dauerhaft und ist im gesamten Heimnetzwerk unter `http://<SERVER-IP>:8501` erreichbar.
+   * Alle Vor- und Nachlaufzeiten (Lead/Lag) für Abfahrten und Ankünfte lassen sich per Schieberegler justieren.
 
-### 3. Streamlit Community Cloud
-Die App ist "Cloud-Ready". 
-1. Loggen Sie sich auf [share.streamlit.io](https://share.streamlit.io/) mit Ihrem GitHub-Account ein.
-2. Klicken Sie auf **"Create App"**.
-3. Wählen Sie Ihr Repository (`heis2201/Steingleis`) und die Datei `app.py` aus.
-4. Klicken Sie auf Deploy. 
+   * Einstellbare „Mindestöffnungslücke“: Bleibt die Schranke bei dichten Zugfolgen unten?
 
----
+4. **📊 60-Minuten-Zeitstrahl**
 
-## ⚙️ Konfiguration (`config.json`)
+   * Visuelle Altair-Grafik zur schnellen Erkennung von „Freie Fahrt“-Fenstern in der nächsten Stunde.
 
-Die App speichert ihre Grundeinstellungen in der Datei `config.json`. Diese wird automatisch erstellt/aktualisiert, wenn Sie in der Web-Oberfläche auf der Seite **"⚙️ Einstellungen"** auf "Speichern" klicken.
+## ⚠️ Wichtige Einschränkungen (Disclaimer)
 
-Wichtige Parameter:
+* **Keine Güterzüge:** Güterzüge und unplanmäßige Sonderfahrten sind in den öffentlichen Schnittstellen der Bahn **nicht erfasst**. Die Schranke kann und wird sich auch für Züge schließen, die nicht auf dem Monitor stehen.
 
-* `lead_dep` / `lag_dep`: Vorlaufzeit (Sekunden) vor der Planabfahrt am Hbf / Nachlaufzeit nach Abfahrt.
-* `lead_arr` / `lag_arr`: Schließzeit vor Ankunft am Hbf / Öffnungszeit vor Halt am Bahnsteig.
-* `track_through_trains`: Aktiviert die Nachbarbahnhof-Erkennung für Fernzüge.
-* `transit_ma_min` / `transit_kl_min`: Fahrzeit der Fernzüge von Mannheim bzw. Kaiserslautern bis zum BÜ Steingleis (in Minuten).
-* `sound_warn_sec`: Wie viele Sekunden vor einer Schließung der Browser-Gong ertönen soll.
----
+* **Ohne Gewähr:** Dieses Tool ist ein Hobby-Projekt zur Prognose. Vertrauen Sie vor Ort immer den physischen Signalanlagen (Rotlicht, Halbschranken, Akustik).
 
-## 🛠️ Verwendete Technologien
+## 🛠️ Installation & Start
 
-* **Python 3.11+**
-* **Streamlit** (Web-Framework)
-* **Pandas** (Datenverarbeitung der Intervalle)
-* **Altair** (Visualisierung des Zeitstrahls)
-* **Web Audio API** (Browser-nativer Sound-Generator, keine `.mp3` Dateien nötig)
+1. **Repository klonen:**
 
-## 📄 Lizenz & Haftungsausschluss
+   ```
+   git clone https://github.com/heis2201/Steingleis.git
+   cd Steingleis
+   
+   ```
 
-Dieses Projekt steht unter der **[MIT Lizenz](LICENSE)**.
+2. **Abhängigkeiten installieren:**
+   Stellen Sie sicher, dass Python installiert ist.
 
-Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. 
-Die Schließzeiten basieren ausschließlich auf mathematischen Prognosen des Personenverkehrs – Güterzüge und Sonderfahrten lösen unangekündigte Schließungen aus.
+   ```
+   pip install -r requirements.txt
+   
+   ```
 
-**Betreten Sie niemals geschlossene Bahnanlagen!**
+   *(Benötigt u.a. `streamlit`, `pandas`, `altair`, `requests`)*
+
+3. **App starten:**
+
+   ```
+   streamlit run app.py
+   
+   ```
+
+## 📁 Dateistruktur
+
+* `app.py`: Die Hauptanwendung (Streamlit Monitor & Bahnhofstafel).
+
+* `train-training.py`: Ein kleines Helfer-Skript zur lokalen Aufzeichnung echter Schließzeiten am Bahnübergang zur Kalibrierung der Parameter.
+
+* `config.json`: Wird automatisch von der App generiert. Hier werden Ihre Einstellungen (Vorwarnzeiten, Caching-Intervalle) atomar und typsicher gespeichert.
+
+## 📜 Lizenz
+
+Dieses Projekt steht unter der **MIT-Lizenz**. Details finden Sie in der `LICENSE`-Datei.
+
+Ein großer Dank geht an [finalrewind.org](https://finalrewind.org/) für die Bereitstellung der großartigen DBF-API!
