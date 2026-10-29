@@ -480,7 +480,7 @@ with st.sidebar:
     active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
 
-    # Modus & Zeit (wird nur angezeigt, wenn "Monitor" aktiv ist)
+    # Modus & Zeit (nur auf der Monitor-Seite anzeigen)
     if active_page == "🚦 Monitor":
         st.subheader("Modus & Zeit")
         modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
@@ -504,10 +504,8 @@ with st.sidebar:
         if st.button("🔄 Jetzt aktualisieren", width="stretch"):
             st.rerun()
 
-    # Platzhalter nach unten und fester Footer am Ende der Sidebar
-    # (HTML sorgt für den automatischen Schubs nach ganz unten)
+    # Footer ganz unten in der Sidebar
     st.markdown('<div style="flex-grow: 1;"></div>', unsafe_allow_html=True)
-    
     with st.container():
         st.markdown("---")
         st.markdown(
@@ -529,29 +527,6 @@ with st.sidebar:
 # SEITE 1: MONITOR
 # =========================================================
 if active_page == "🚦 Monitor":
-    with st.sidebar:
-        st.subheader("Modus & Zeit")
-        modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
-        now_german = get_german_now()
-
-        if modus == "🔴 Live-Echtzeit (Jetzt)":
-            use_realtime = True
-            auto_refresh = st.toggle(
-                f"🔄 Auto-Refresh ({st.session_state.cfg.get('refresh_interval_sec', 15)}s)", 
-                value=True
-            )
-            plan_selected_time = None
-        else:
-            use_realtime = False
-            auto_refresh = False
-            st.caption("Echtzeit-Verspätungen deaktiviert (reiner Soll-Fahrplan).")
-            plan_selected_time = st.time_input("Wunsch-Uhrzeit:", value=now_german.time())
-
-        st.caption(f"🕒 Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
-
-        if st.button("🔄 Jetzt aktualisieren", width="stretch"):
-            st.rerun()
-
     refresh_interval = int(st.session_state.cfg.get("refresh_interval_sec", 15)) if (use_realtime and auto_refresh) else None
 
     @fragment_dec(run_every=refresh_interval)
