@@ -4,6 +4,16 @@ Eine in Python und [Streamlit](https://streamlit.io/) geschriebene Web-Applikati
 
 Das Tool ruft über die [DBF-API](https://dbf.finalrewind.org/) Live-Fahrplandaten ab, berechnet anhand konfigurierbarer Vor- und Nachlaufzeiten die Schließphasen des Bahnübergangs und visualisiert diese in einem interaktiven Dashboard inklusive 60-Minuten-Zeitstrahl.
 
+## 📑 Inhaltsverzeichnis
+- [✨ Features](#-features)
+- [🚀 Installation & Betrieb](#-installation--betrieb)
+  - [1. Lokal (Windows / macOS / Linux)](#1-lokal-windows--macos--linux)
+  - [2. Docker / Raspberry Pi](#2-docker--raspberry-pi)
+  - [3. Streamlit Community Cloud](#3-streamlit-community-cloud)
+- [⚙️ Konfiguration (`config.json`)](#️-konfiguration-configjson)
+- [🛠️ Verwendete Technologien](#️-verwendete-technologien)
+- [📄 Lizenz & Haftungsausschluss](#-lizenz--haftungsausschluss)
+
 ## ✨ Features
 
 * **Echtzeit-Dashboard & Fahrplan-Modus:** Anzeige des aktuellen BÜ-Status (Offen / Geschlossen) oder Analyse eines beliebigen Zeitfensters in der Zukunft/Vergangenheit.
@@ -79,4 +89,6 @@ Wichtige Parameter:
 * **Web Audio API** (Browser-nativer Sound-Generator, keine `.mp3` Dateien nötig)
 
 ## 📄 Lizenz & Haftungsausschluss
-Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. Betreten Sie niemals geschlossene Bahnanlagen!
+Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. 
+Die Schließzeiten basieren ausschließlich auf mathematischen Prognosen des Personenverkehrs – Güterzüge und Sonderfahrten lösen unangekündigte Schließungen aus.
+Betreten Sie niemals geschlossene Bahnanlagen!
