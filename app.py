@@ -35,7 +35,6 @@ def get_german_now() -> datetime.datetime:
 CONFIG_FILE = "config.json"
 STATION_NAME = "Neustadt(Weinstr)Hbf"
 
-# Schema für Typprüfung, Wertegrenzen und Default-Werte
 CONFIG_SCHEMA = {
     # Taktung & API-Schonung
     "ui_refresh_sec": (int, 2, 30, 5),
@@ -58,7 +57,6 @@ CONFIG_SCHEMA = {
 DEFAULT_CONFIG = {k: v[3] for k, v in CONFIG_SCHEMA.items()}
 
 def validate_and_sanitize_config(raw_cfg: dict) -> dict:
-    """Validiert Typen und erzwingt gültige Wertebereiche."""
     clean = {}
     for key, (v_type, v_min, v_max, default_val) in CONFIG_SCHEMA.items():
         val = raw_cfg.get(key, default_val)
@@ -87,7 +85,6 @@ def load_config() -> dict:
     return DEFAULT_CONFIG.copy()
 
 def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
-    """Schreibt die Konfiguration atomar über eine temporäre Datei."""
     try:
         clean_cfg = validate_and_sanitize_config(cfg)
         dir_name = os.path.dirname(os.path.abspath(filepath))
@@ -140,13 +137,13 @@ def get_http_session() -> requests.Session:
     return session
 
 # ---------------------------------------------------------
-# CLIENT-SEITIGE LIVE-UHR (UNABHÄNGIG VOM UI-REFRESH)
+# CLIENT-SEITIGE LIVE-UHR (FÜR DIE SIDEBAR)
 # ---------------------------------------------------------
-def render_live_clock():
-    """Zeigt eine kontinuierlich im Browser laufende Uhrzeit (MEZ/MESZ) an."""
+def render_sidebar_clock():
+    """Zeigt eine kontinuierlich im Browser laufende Uhrzeit in der Sidebar an."""
     clock_html = """
-    <div style="font-family: inherit; font-size: 1.05rem; color: #555; padding: 4px 0 10px 0;">
-        🕒 Aktuelle Uhrzeit (MEZ/MESZ): <strong id="live-clock" style="color: #111;">--:--:-- Uhr</strong>
+    <div style="font-family: inherit; font-size: 0.95rem; color: #555; padding: 2px 0 6px 0;">
+        🕒 Aktuelle Uhrzeit: <strong id="live-clock" style="color: #111;">--:--:-- Uhr</strong>
     </div>
     <script>
     (function() {
@@ -167,13 +164,12 @@ def render_live_clock():
     })();
     </script>
     """
-    components.html(clock_html, height=40)
+    components.html(clock_html, height=35)
 
 # ---------------------------------------------------------
 # SANDBOXED AUDIO-ALARM
 # ---------------------------------------------------------
 def play_sound_cloud():
-    """Führt den Audio-Synthesizer in einem isolierten Iframe aus."""
     js_code = """
     <!DOCTYPE html>
     <html>
@@ -266,7 +262,6 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
 
 @st.cache_data(show_spinner=False)
 def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, time_bucket: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Fragt die DBF-API ab. Cached sitzungsübergreifend solange 'time_bucket' gleich bleibt."""
     session = get_http_session()
     headers = {"User-Agent": f"Streamlit-Steingleis-Monitor/{APP_VERSION} (github.com/heis2201/Steingleis)"}
     safe_station = urllib.parse.quote(station_name)
@@ -287,7 +282,6 @@ def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, tim
         return [], f"Verbindungsfehler ({station_name}): {e}"
 
 def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True, is_neighbor: bool = False) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Ermittelt das konfigurierte Cache-Fenster und leitet an die gecachte Funktion weiter."""
     cfg = st.session_state.cfg
     cache_ttl = cfg.get("api_cache_through_sec", 120) if is_neighbor else cfg.get("api_cache_local_sec", 60)
     now_epoch = int(datetime.datetime.now().timestamp())
@@ -584,10 +578,10 @@ with st.sidebar:
 
     if active_page == "🚦 Monitor":
         st.subheader("Modus & Zeit")
-        modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit (Jetzt)", "📅 Fahrplan-Analyse (Wunschzeit)"])
+        modus = st.radio("Betriebsmodus:", ["🔴 Live-Echtzeit", "📅 Fahrplan-Analyse (Wunschzeit)"])
         now_german = get_german_now()
 
-        if modus == "🔴 Live-Echtzeit (Jetzt)":
+        if modus == "🔴 Live-Echtzeit":
             use_realtime = True
             ui_interval = int(st.session_state.cfg.get("ui_refresh_sec", 5))
             auto_refresh = st.toggle(
@@ -604,7 +598,8 @@ with st.sidebar:
             sel_time = col_t.time_input("Uhrzeit:", value=now_german.time())
             plan_selected_dt = datetime.datetime.combine(sel_date, sel_time)
 
-        st.caption(f"🕒 Stand Referenzzeit: **{now_german.strftime('%H:%M:%S')}** (MEZ/MESZ)")
+        # Kontinuierlich laufende Live-Uhr direkt in der Sidebar
+        render_sidebar_clock()
 
         if st.button("🔄 Jetzt Daten neu laden", width="stretch"):
             st.cache_data.clear()
@@ -644,10 +639,8 @@ if active_page == "🚦 Monitor":
         merged = merge_intervals(raw_intervals, min_gap)
 
         st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
-        if use_realtime:
-            render_live_clock()
-        else:
-            st.caption(f"🕒 Referenz-Zeitstempel (Plan): **{calc_base_dt.strftime('%d.%m.%Y %H:%M:%S')} Uhr**")
+        if not use_realtime:
+            st.caption(f"🕒 Gewählter Analysezeitpunkt: **{calc_base_dt.strftime('%d.%m.%Y um %H:%M')} Uhr**")
 
         if api_errors:
             with st.expander("⚠️ Verbindungswarnung zur Fahrplan-API", expanded=True):
@@ -691,7 +684,7 @@ if active_page == "🚦 Monitor":
         col1, col2 = st.columns([1, 1])
 
         with col1:
-            sub_title = "Live-Status (Jetzt)" if use_realtime else f"Status am {calc_base_dt.strftime('%d.%m. um %H:%M')} Uhr (Plan)"
+            sub_title = "Live-Status" if use_realtime else f"Status am {calc_base_dt.strftime('%d.%m. um %H:%M')} Uhr (Plan)"
             st.subheader(sub_title)
             
             if not zugliste and api_errors:
@@ -715,7 +708,7 @@ if active_page == "🚦 Monitor":
                     st.metric("Nächste Schließung um", 
                               s_next.strftime("%H:%M:%S"), 
                               f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
-                    st.caption(f"Erster Zug: {tr_next[0]}")
+                    st.caption(f"Nächster Zug: {tr_next[0]}")
                 else:
                     st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
 
