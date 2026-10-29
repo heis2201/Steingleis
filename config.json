@@ -1,13 +1,15 @@
 {
-  "refresh_interval_sec": 20,
-  "sound_alarm": true,
-  "sound_warn_sec": 15,
-  "track_through_trains": false,
-  "transit_ma_min": 16,
-  "transit_kl_min": 19,
-  "lead_dep": 210,
+  "ui_refresh_sec": 5,
+  "api_cache_local_sec": 60,
+  "api_cache_through_sec": 120,
+  "lead_dep": 240,
   "lag_dep": 90,
   "lead_arr": 160,
-  "lag_arr": 30,
-  "min_gap": 30
+  "lag_arr": 40,
+  "min_gap": 30,
+  "track_through_trains": true,
+  "transit_ma_min": 16,
+  "transit_kl_min": 19,
+  "sound_alarm": true,
+  "sound_warn_sec": 45
 }
