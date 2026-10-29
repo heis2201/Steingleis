@@ -1,4 +1,4 @@
-# 🚦 BÜ Steingleis Monitor (v0.1)
+# 🚦 BÜ Steingleis Monitor
 
 Eine in Python und [Streamlit](https://streamlit.io/) geschriebene Web-Applikation zur Echtzeit-Überwachung und Prognose von Schrankenschließzeiten am Bahnübergang "Steingleis" in Neustadt an der Weinstraße (KBS 670).
 
@@ -7,11 +7,10 @@ Das Tool ruft über die [DBF-API](https://dbf.finalrewind.org/) Live-Fahrplandat
 ## ✨ Features
 
 * **Echtzeit-Dashboard & Fahrplan-Modus:** Anzeige des aktuellen BÜ-Status (Offen / Geschlossen) oder Analyse eines beliebigen Zeitfensters in der Zukunft/Vergangenheit.
-* **Intelligente Fernverkehrs-Erkennung:** Da durchfahrende ICE- und TGV-Züge nicht im Neustadter Fahrplan auftauchen, überwacht die App parallel die Abfahrten in **Mannheim Hbf** und **Kaiserslautern Hbf**. Durch Laufzeit-Interpolation (z. B. +16 Min ab Mannheim) werden Schließungen für Durchfahrten exakt prognostiziert.
-* **Visueller Zeitstrahl (Gantt-Diagramm):** Eine grafische Übersicht der nächsten 60 Minuten mit 5-Minuten-Taktraster (erstellt mit Altair).
-* **Akustische Vorwarnung:** Ein im Browser autark laufender Schrankengong (Web Audio API) warnt konfigurierbare X Sekunden vor einer bevorstehenden Schließung.
+* **Intelligente Fernverkehrs-Erkennung:** Da durchfahrende ICE- und TGV-Züge nicht im Neustadter Fahrplan auftauchen, überwacht die App parallel die Abfahrten in **Mannheim Hbf** und **Kaiserslautern Hbf**. Durch Laufzeit-Interpolation (z. B. +16 Min ab Mannheim) werden Schließungen für Durchfahrten prognostiziert.
+* **Visueller Zeitstrahl:** Eine grafische Übersicht der nächsten 60 Minuten mit 5-Minuten-Taktraster.
+* **Akustische Vorwarnung:** Ein im Browser autark laufender Schrankengong warnt konfigurierbare X Sekunden vor einer bevorstehenden Schließung.
 * **Dynamische Stellwerks-Parameter:** Alle Vorlauf- und Nachlaufzeiten für Ankünfte, Abfahrten und Durchfahrten können live über das Einstellungs-Menü angepasst und in der `config.json` dauerhaft gesichert werden.
-* **Zeitzonen-sicher:** Automatischer Fallback auf deutsche Ortszeit (`Europe/Berlin`), wodurch die App problemlos auf internationalen Cloud-Servern (z. B. Streamlit Community Cloud) betrieben werden kann.
 
 ---
 
@@ -33,3 +32,51 @@ pip install -r requirements.txt
 
 # App starten
 python -m streamlit run app.py
+```
+Die App ist danach unter `http://localhost:8501` im Browser erreichbar.
+
+### 2. Docker / Raspberry Pi
+Ideal für den Betrieb auf einem lokalen Homeserver oder Raspberry Pi.
+```bash
+
+# Klonen und in das Verzeichnis wechseln
+git clone https://github.com/heis2201/Steingleis.git
+cd Steingleis
+
+# Container bauen und im Hintergrund starten
+docker compose up -d --build
+```
+Die App läuft dauerhaft und ist im gesamten Heimnetzwerk unter `http://<SERVER-IP>:8501` erreichbar.
+
+### 3. Streamlit Community Cloud
+Die App ist "Cloud-Ready". 
+1. Loggen Sie sich auf [share.streamlit.io](https://share.streamlit.io/) mit Ihrem GitHub-Account ein.
+2. Klicken Sie auf **"Create App"**.
+3. Wählen Sie Ihr Repository (`heis2201/Steingleis`) und die Datei `app.py` aus.
+4. Klicken Sie auf Deploy. 
+
+---
+
+## ⚙️ Konfiguration (`config.json`)
+
+Die App speichert ihre Grundeinstellungen in der Datei `config.json`. Diese wird automatisch erstellt/aktualisiert, wenn Sie in der Web-Oberfläche auf der Seite **"⚙️ Einstellungen"** auf "Speichern" klicken.
+
+Wichtige Parameter:
+
+* `lead_dep` / `lag_dep`: Vorlaufzeit (Sekunden) vor der Planabfahrt am Hbf / Nachlaufzeit nach Abfahrt.
+* `lead_arr` / `lag_arr`: Schließzeit vor Ankunft am Hbf / Öffnungszeit vor Halt am Bahnsteig.
+* `track_through_trains`: Aktiviert die Nachbarbahnhof-Erkennung für Fernzüge.
+* `transit_ma_min` / `transit_kl_min`: Fahrzeit der Fernzüge von Mannheim bzw. Kaiserslautern bis zum BÜ Steingleis (in Minuten).
+* `sound_warn_sec`: Wie viele Sekunden vor einer Schließung der Browser-Gong ertönen soll.
+---
+
+## 🛠️ Verwendete Technologien
+
+* **Python 3.11+**
+* **Streamlit** (Web-Framework)
+* **Pandas** (Datenverarbeitung der Intervalle)
+* **Altair** (Visualisierung des Zeitstrahls)
+* **Web Audio API** (Browser-nativer Sound-Generator, keine `.mp3` Dateien nötig)
+
+## 📄 Lizenz & Haftungsausschluss
+Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. Betreten Sie niemals geschlossene Bahnanlagen!
