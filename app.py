@@ -478,6 +478,20 @@ with st.sidebar:
     st.caption(f"App-Version {APP_VERSION}")
     active_page = st.radio("Bereich wählen:", ["🚦 Monitor", "⚙️ Einstellungen"], index=0)
     st.markdown("---")
+    
+    # Footer in Sidebar
+    st.markdown(
+        """
+        <div style="margin-top: auto; font-size: 0.8em; color: #888;">
+            <a href="https://github.com/heis2201/Steingleis/blob/main/README.md" target="_blank" style="color: #888; text-decoration: none;">📄 Dokumentation (README)</a><br>
+            <a href="https://github.com/heis2201/Steingleis/blob/main/LICENSE" target="_blank" style="color: #888; text-decoration: none;">⚖️ MIT Lizenz</a><br>
+            <br>
+            <em>Prognosen ohne Gewähr.<br>Güterzüge nicht erfasst.</em>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 
 # =========================================================
 # SEITE 1: MONITOR
