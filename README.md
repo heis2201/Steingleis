@@ -91,4 +91,5 @@ Wichtige Parameter:
 ## 📄 Lizenz & Haftungsausschluss
 Dieses Projekt ist für private und analytische Zwecke konzipiert. Es handelt sich **nicht** um eine offizielle oder sicherheitsrelevante Anwendung der Deutschen Bahn. 
 Die Schließzeiten basieren ausschließlich auf mathematischen Prognosen des Personenverkehrs – Güterzüge und Sonderfahrten lösen unangekündigte Schließungen aus.
-Betreten Sie niemals geschlossene Bahnanlagen!
+
+**Betreten Sie niemals geschlossene Bahnanlagen!**
