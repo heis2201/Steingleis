@@ -19,7 +19,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -843,6 +843,11 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_dep = []
             for tr in dep_data:
+                # Züge ohne Abfahrtszeit (reine Ankünfte/Endstationen) herausfiltern
+                sched_dep = tr.get("scheduledDeparture") or tr.get("departure")
+                if not sched_dep:
+                    continue
+
                 dest = tr.get("destination") or tr.get("direction") or ""
                 train_name = clean_train_name(tr)
                 if filter_steingleis_dep and not check_crosses_steingleis(tr, mode="dep"): continue
@@ -865,6 +870,11 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_arr = []
             for tr in arr_data:
+                # Züge ohne Ankunftszeit (z. B. Startfahrten ab Neustadt) herausfiltern
+                sched_arr = tr.get("scheduledArrival") or tr.get("arrival")
+                if not sched_arr:
+                    continue
+
                 route_stops = extract_station_names(tr.get("route", []))
                 pre_stops = []
                 for s in route_stops:
