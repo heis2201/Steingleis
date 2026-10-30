@@ -7,6 +7,7 @@ import urllib.parse
 from zoneinfo import ZoneInfo
 from typing import List, Tuple, Dict, Any, Optional
 import hashlib
+from dataclasses import dataclass, asdict, field
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -19,7 +20,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.3.0"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -30,10 +31,8 @@ st.set_page_config(
 BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
 def get_german_now() -> datetime.datetime:
-    """Liefert die exakte deutsche Ortszeit ohne Tzinfo-Tags."""
     return datetime.datetime.now(BERLIN_TZ).replace(tzinfo=None)
 
-# Robuster absoluter Dateipfad
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 STATION_NAME = "Neustadt(Weinstr)Hbf"
@@ -51,79 +50,83 @@ def verify_admin_password(input_password: str) -> bool:
     return calc_hash == ADMIN_PWD_HASH
 
 # =========================================================
-# KONFIGURATIONS-SCHEMA & TYPVALIDIERUNG
+# TYPISIERTE MODELLE (DATACLASSES)
 # =========================================================
-CONFIG_SCHEMA = {
-    # Taktung & API-Schonung
-    "ui_refresh_sec": (int, 2, 30, 5),
-    "api_cache_local_sec": (int, 10, 120, 60),
-    "api_cache_through_sec": (int, 15, 180, 120),
-    # Stellwerkszeiten
-    "lead_dep": (int, 0, 600, 240),
-    "lag_dep": (int, 0, 300, 90),
-    "lead_arr": (int, 0, 600, 160),
-    "lag_arr": (int, 0, 300, 40),
-    "min_gap": (int, 0, 300, 30),
-    # Fernverkehr & Audio
-    "track_through_trains": (bool, None, None, True),
-    "transit_ma_min": (int, 5, 60, 16),
-    "transit_kl_min": (int, 5, 60, 19),
-    "sound_alarm": (bool, None, None, True),
-    "sound_warn_sec": (int, 10, 180, 45)
-}
-
-DEFAULT_CONFIG = {k: v[3] for k, v in CONFIG_SCHEMA.items()}
-
 def parse_bool_value(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
+    if isinstance(value, bool): return value
+    if isinstance(value, int) and value in (0, 1): return bool(value)
     if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on", "ja"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off", "nein", ""}:
-            return False
+        norm = value.strip().lower()
+        if norm in {"1", "true", "yes", "y", "on", "ja"}: return True
+        if norm in {"0", "false", "no", "n", "off", "nein", ""}: return False
     return bool(default)
 
-def validate_and_sanitize_config(raw_cfg: dict) -> dict:
-    if not isinstance(raw_cfg, dict):
-        raw_cfg = {}
-    clean = {}
-    for key, (v_type, v_min, v_max, default_val) in CONFIG_SCHEMA.items():
-        val = raw_cfg.get(key, default_val)
-        try:
-            if v_type == bool:
-                clean[key] = parse_bool_value(val, bool(default_val))
-            elif v_type == int:
-                v = int(val)
-                if v_min is not None and v < v_min:
-                    v = v_min
-                elif v_max is not None and v > v_max:
-                    v = v_max
-                clean[key] = v
-        except (ValueError, TypeError):
-            clean[key] = default_val
-    return clean
+def int_or_default(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "": return default
+        return int(value)
+    except: return default
 
-def load_config() -> dict:
+@dataclass
+class AppConfig:
+    ui_refresh_sec: int = 5
+    api_cache_local_sec: int = 60
+    api_cache_through_sec: int = 120
+    lead_dep: int = 240
+    lag_dep: int = 90
+    lead_arr: int = 160
+    lag_arr: int = 40
+    min_gap: int = 30
+    track_through_trains: bool = True
+    transit_ma_min: int = 16
+    transit_kl_min: int = 19
+    sound_alarm: bool = True
+    sound_warn_sec: int = 45
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        if not isinstance(data, dict): data = {}
+        return cls(
+            ui_refresh_sec=int_or_default(data.get("ui_refresh_sec"), 5),
+            api_cache_local_sec=int_or_default(data.get("api_cache_local_sec"), 60),
+            api_cache_through_sec=int_or_default(data.get("api_cache_through_sec"), 120),
+            lead_dep=int_or_default(data.get("lead_dep"), 240),
+            lag_dep=int_or_default(data.get("lag_dep"), 90),
+            lead_arr=int_or_default(data.get("lead_arr"), 160),
+            lag_arr=int_or_default(data.get("lag_arr"), 40),
+            min_gap=int_or_default(data.get("min_gap"), 30),
+            track_through_trains=parse_bool_value(data.get("track_through_trains"), True),
+            transit_ma_min=int_or_default(data.get("transit_ma_min"), 16),
+            transit_kl_min=int_or_default(data.get("transit_kl_min"), 19),
+            sound_alarm=parse_bool_value(data.get("sound_alarm"), True),
+            sound_warn_sec=int_or_default(data.get("sound_warn_sec"), 45)
+        )
+
+    def to_dict(self):
+        return asdict(self)
+
+@dataclass
+class ClosureEvent:
+    start: datetime.datetime
+    end: datetime.datetime
+    trains: List[str] = field(default_factory=list)
+
+def load_config() -> AppConfig:
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return validate_and_sanitize_config(data)
+                return AppConfig.from_dict(data)
         except Exception:
             st.session_state["config_load_error"] = True
-            return DEFAULT_CONFIG.copy()
-    return DEFAULT_CONFIG.copy()
+            return AppConfig()
+    return AppConfig()
 
-def save_config_atomic(cfg: dict, filepath: str = CONFIG_FILE) -> bool:
+def save_config_atomic(cfg: AppConfig, filepath: str = CONFIG_FILE) -> bool:
     try:
-        clean_cfg = validate_and_sanitize_config(cfg)
         dir_name = os.path.dirname(os.path.abspath(filepath))
         with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
-            json.dump(clean_cfg, tf, indent=2)
+            json.dump(cfg.to_dict(), tf, indent=2)
             temp_name = tf.name
         os.replace(temp_name, filepath)
         return True
@@ -137,18 +140,17 @@ if "cfg" not in st.session_state:
 if "last_alarmed_closure" not in st.session_state:
     st.session_state.last_alarmed_closure = None
 
-# Admin Authentifizierung
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
-# Option B: Geheimer Admin-URL-Parameter (?admin=...)
 url_admin_token = st.query_params.get("admin", "")
 if url_admin_token and verify_admin_password(url_admin_token):
     st.session_state.is_admin = True
 
-# Backup-Konfiguration (für Zurücksetzen ohne Admin-Speicherung)
 if "temp_cfg" not in st.session_state:
-    st.session_state.temp_cfg = st.session_state.cfg.copy()
+    # We copy the config object using a new instance from dict to ensure separation
+    st.session_state.temp_cfg = AppConfig.from_dict(st.session_state.cfg.to_dict())
+
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -166,8 +168,7 @@ elif hasattr(st, "experimental_fragment"):
     fragment_dec = st.experimental_fragment
 else:
     def fragment_dec(*args, **kwargs):
-        def wrapper(f):
-            return f
+        def wrapper(f): return f
         return wrapper
 
 # ---------------------------------------------------------
@@ -176,19 +177,41 @@ else:
 @st.cache_resource
 def get_http_session() -> requests.Session:
     session = requests.Session()
-    retries = Retry(
-        total=2,
-        backoff_factor=0.3,
-        status_forcelist=[500, 502, 503, 504],
-        raise_on_status=False
-    )
+    retries = Retry(total=2, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
     adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
 
 # ---------------------------------------------------------
-# CLIENT-SEITIGE LIVE-UHR
+# BAHNHOFSTAFEL CSS
+# ---------------------------------------------------------
+FIA_CSS = """
+<style>
+.fia-header { background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; font-weight: bold; font-size: 1.05rem; }
+.fia-row { background-color: #0b1a30; border-top: 1px solid #1a3258; padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; display: flex; align-items: stretch; color: #ffffff; box-sizing: border-box; }
+.fia-time-col { width: 75px; flex-shrink: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start; }
+.fia-time { font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; }
+.fia-time-canc { font-size: 1.35rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1; }
+.fia-delay { font-size: 0.85rem; font-weight: 700; color: #ffcc00; margin-top: 2px; }
+.fia-ontime { font-size: 0.8rem; color: #4caf50; font-weight: 600; margin-top: 2px; }
+.fia-canc-text { font-size: 0.85rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 2px; }
+.fia-main-col { flex-grow: 1; min-width: 0; padding: 6px 12px; display: flex; flex-direction: column; border-left: 1px solid #1a3258; }
+.fia-top-line { display: flex; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap; }
+.fia-train { font-size: 1.1rem; font-weight: normal; width: 65px; flex-shrink: 0; }
+.fia-dest { font-size: 1.45rem; font-weight: bold; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fia-badge { background-color: #d32f2f; color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 12px; display: inline-flex; align-items: center; height: 20px; }
+.fia-via { font-size: 0.85rem; color: #a0b6d6; line-height: 1.2; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fia-msg { color: #ffcc00; font-size: 0.85rem; font-weight: bold; margin-top: 4px; display: flex; align-items: flex-start; }
+.fia-msg-icon { display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #ffcc00; margin-right: 6px; margin-top: 2px; }
+.fia-plat-col { width: 65px; flex-shrink: 0; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid #1a3258; }
+.fia-plat-lbl { font-size: 0.65rem; text-transform: uppercase; font-weight: bold; color: #a0b6d6; letter-spacing: 1px; margin-bottom: 2px; }
+.fia-plat-val { font-size: 1.5rem; font-weight: bold; line-height: 1; }
+</style>
+"""
+
+# ---------------------------------------------------------
+# CLIENT-SEITIGE LIVE-UHR & SANDBOX AUDIO
 # ---------------------------------------------------------
 def render_sidebar_clock():
     clock_html = """
@@ -199,13 +222,7 @@ def render_sidebar_clock():
     (function() {
         function updateClock() {
             const now = new Date();
-            const timeStr = now.toLocaleTimeString('de-DE', { 
-                timeZone: 'Europe/Berlin', 
-                hour12: false, 
-                hour: '2-digit', 
-                minute: '2-digit', 
-                second: '2-digit' 
-            });
+            const timeStr = now.toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
             const el = document.getElementById('live-clock');
             if (el) el.innerText = timeStr + " Uhr";
         }
@@ -216,9 +233,6 @@ def render_sidebar_clock():
     """
     components.html(clock_html, height=35)
 
-# ---------------------------------------------------------
-# SANDBOXED AUDIO-ALARM
-# ---------------------------------------------------------
 def play_sound_cloud():
     js_code = """
     <!DOCTYPE html>
@@ -231,9 +245,8 @@ def play_sound_cloud():
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             if (!AudioContext) return;
             const ctx = new AudioContext();
-            const strikeInterval = 0.55;
             for (let i = 0; i < 4; i++) {
-                const strikeTime = ctx.currentTime + (i * strikeInterval);
+                const strikeTime = ctx.currentTime + (i * 0.55);
                 [800, 1150, 1900].forEach((freq, idx) => {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
@@ -257,7 +270,7 @@ def play_sound_cloud():
     components.html(js_code, height=0, width=0)
 
 # ---------------------------------------------------------
-# HILFSFUNKTIONEN & CACHED API-FETCH
+# ZENTRALE HELPER-FUNKTIONEN (ROUTING & NORMALISIERUNG)
 # ---------------------------------------------------------
 def clean_html(raw_html: str) -> str:
     return "\n".join(line.strip() for line in raw_html.splitlines() if line.strip())
@@ -275,18 +288,51 @@ def clean_train_name(tr: dict) -> str:
     if m_simple: return f"{m_simple.group(1).upper()}{m_simple.group(2).strip()}"
     return raw if raw else "Zug"
 
-def is_neustadt_hbf(name: str) -> bool:
-    if not name: return False
-    n = name.lower()
-    if "böbig" in n or "boebig" in n or "süd" in n or "sued" in n: return False
-    return "neustadt" in n
+def normalize_station_name(name: str) -> str:
+    if not name: return ""
+    return str(name).strip().lower().replace("ö", "oe").replace("ü", "ue").replace("ä", "ae")
 
-def extract_station_names(route_list) -> List[str]:
+def is_neustadt_hbf(name: str) -> bool:
+    norm = normalize_station_name(name)
+    return "neustadt" in norm and "boebig" not in norm and "sued" not in norm
+
+def get_route_stops(tr: dict) -> List[str]:
     names = []
-    for entry in route_list or []:
+    for entry in tr.get("route", []):
         if isinstance(entry, dict): names.append(str(entry.get("name", "") or ""))
         elif isinstance(entry, str): names.append(entry)
     return names
+
+def get_trip_destination(tr: dict) -> str:
+    dest = tr.get("destination") or tr.get("direction") or ""
+    if not dest:
+        stops = get_route_stops(tr)
+        if stops: dest = stops[-1]
+    return str(dest).strip() if dest else "Neustadt(Weinstr)Hbf"
+
+def get_trip_origin(tr: dict) -> str:
+    origin = tr.get("origin") or ""
+    if not origin:
+        stops = get_route_stops(tr)
+        if stops: origin = stops[0]
+    return str(origin).strip() if origin else "Unbekannt"
+
+def get_via_stops(tr: dict, mode: str) -> str:
+    stops = get_route_stops(tr)
+    if mode == "dep":
+        post_stops = []
+        found = False
+        for s in stops:
+            if found: post_stops.append(str(s))
+            elif is_neustadt_hbf(s): found = True
+        if not found: post_stops = [str(s) for s in stops]
+        return ", ".join(post_stops[:5])
+    else:
+        pre_stops = []
+        for s in stops:
+            if is_neustadt_hbf(s): break
+            pre_stops.append(str(s))
+        return ", ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
 
 def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = None) -> Optional[datetime.datetime]:
     if not time_val: return None
@@ -301,12 +347,6 @@ def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = N
     if dt < ref - datetime.timedelta(hours=6): dt += datetime.timedelta(days=1)
     elif dt > ref + datetime.timedelta(hours=18): dt -= datetime.timedelta(days=1)
     return dt
-
-def int_or_default(value: Any, default: int = 0) -> int:
-    try:
-        if value is None or value == "": return default
-        return int(value)
-    except: return default
 
 @st.cache_data(show_spinner=False)
 def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, time_bucket: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
@@ -327,44 +367,35 @@ def fetch_dbf_board_cached(station_name: str, mode: str, use_realtime: bool, tim
 
 def fetch_dbf_board(station_name: str, mode: str = "dep", use_realtime: bool = True, is_neighbor: bool = False) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
-    cache_ttl = cfg.get("api_cache_through_sec", 120) if is_neighbor else cfg.get("api_cache_local_sec", 60)
+    cache_ttl = cfg.api_cache_through_sec if is_neighbor else cfg.api_cache_local_sec
     now_epoch = int(datetime.datetime.now().timestamp())
     time_bucket = now_epoch // max(cache_ttl, 5)
     return fetch_dbf_board_cached(station_name, mode, use_realtime, time_bucket)
 
 def check_crosses_steingleis(tr: dict, mode: str = "dep") -> bool:
-    dest = tr.get("destination") or tr.get("direction") or ""
-    route_stops = extract_station_names(tr.get("route", []))
+    dest = get_trip_destination(tr)
+    origin = get_trip_origin(tr)
+    stops = get_route_stops(tr)
+    
     if mode == "dep":
         post_stops = []
-        found_neustadt = False
-        for s in route_stops:
-            s_lower = str(s).lower()
-            if found_neustadt: post_stops.append(s)
-            elif is_neustadt_hbf(s_lower): found_neustadt = True
-        if not found_neustadt: post_stops = route_stops
-        return any(kw in dest.lower() for kw in WEST_CORRIDOR_KEYWORDS) or \
-               any(any(kw in str(s).lower() for kw in WEST_CORRIDOR_KEYWORDS) for s in post_stops)
+        found = False
+        for s in stops:
+            if found: post_stops.append(s)
+            elif is_neustadt_hbf(s): found = True
+        if not found: post_stops = stops
+        
+        return any(kw in normalize_station_name(dest) for kw in WEST_CORRIDOR_KEYWORDS) or                any(any(kw in normalize_station_name(s) for kw in WEST_CORRIDOR_KEYWORDS) for s in post_stops)
     else:
         pre_stops = []
-        for s in route_stops:
-            s_lower = str(s).lower()
-            if is_neustadt_hbf(s_lower): break
+        for s in stops:
+            if is_neustadt_hbf(s): break
             pre_stops.append(s)
-        origin = pre_stops[0] if pre_stops else tr.get("origin", "")
-        return any(kw in origin.lower() for kw in WEST_CORRIDOR_KEYWORDS) or \
-               any(any(kw in str(s).lower() for kw in WEST_CORRIDOR_KEYWORDS) for s in pre_stops)
+            
+        return any(kw in normalize_station_name(origin) for kw in WEST_CORRIDOR_KEYWORDS) or                any(any(kw in normalize_station_name(s) for kw in WEST_CORRIDOR_KEYWORDS) for s in pre_stops)
 
-def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -> Tuple[list, list, list]:
+def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -> Tuple[List[ClosureEvent], list, list]:
     cfg = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
-    lead_dep = cfg["lead_dep"]
-    lag_dep = cfg["lag_dep"]
-    lead_arr = cfg["lead_arr"]
-    lag_arr = cfg["lag_arr"]
-    track_through = cfg["track_through_trains"]
-    transit_ma = cfg["transit_ma_min"]
-    transit_kl = cfg["transit_kl_min"]
-
     raw_intervals = []
     zugliste = []
     seen_events = set()
@@ -377,70 +408,63 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
     if dep_err: api_errors.append(dep_err)
     if arr_err: api_errors.append(arr_err)
 
+    # 1. Abfahrten Neustadt
     for tr in dep_data:
         if tr.get("is_cancelled") or tr.get("isCancelled"): continue
         if check_crosses_steingleis(tr, mode="dep"):
             train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledDeparture") or tr.get("departure") or tr.get("time") or tr.get("scheduledTime")
-            dest = tr.get("destination") or tr.get("direction") or ""
+            dest = get_trip_destination(tr)
             delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
             num_match = re.search(r'\d+', train_name)
             if num_match: neustadt_train_numbers.add(num_match.group(0))
+            
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
                 event_id = f"DEP_{train_name}_{sched_time}"
                 if event_id not in seen_events:
                     seen_events.add(event_id)
-                    start = dep_dt - datetime.timedelta(seconds=lead_dep)
-                    end = dep_dt + datetime.timedelta(seconds=lag_dep)
+                    start = dep_dt - datetime.timedelta(seconds=cfg.lead_dep)
+                    end = dep_dt + datetime.timedelta(seconds=cfg.lag_dep)
                     info = f"Abfahrt: {train_name} -> {dest}"
-                    raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    raw_intervals.append(ClosureEvent(start, end, [info]))
                     zugliste.append({
-                        "Richtung": "➡️ Abfahrt (nach Westen)",
-                        "Zug": train_name,
-                        "Start/Ziel": dest,
-                        "Fahrplanzeit": dep_dt.strftime("%H:%M") + delay_str,
-                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
-                        "_start_dt": start
+                        "Richtung": "➡️ Abfahrt (nach Westen)", "Zug": train_name, "Start/Ziel": dest,
+                        "Fahrplanzeit": f'{dep_dt.strftime("%H:%M")} (+{delay})' if (use_realtime and delay>0) else dep_dt.strftime("%H:%M"),
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}", "_start_dt": start
                     })
 
+    # 2. Ankünfte Neustadt
     kombinierte_ankuenfte = arr_data + dep_data
     for tr in kombinierte_ankuenfte:
         if tr.get("is_cancelled") or tr.get("isCancelled"): continue
         if check_crosses_steingleis(tr, mode="arr"):
             train_name = clean_train_name(tr)
             sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time") or tr.get("scheduledTime")
+            if not sched_time: continue
+            
             delay = int_or_default(tr.get("delayArrival", tr.get("delay", 0)), 0) if use_realtime else 0
             num_match = re.search(r'\d+', train_name)
             if num_match: neustadt_train_numbers.add(num_match.group(0))
-            route_stops = extract_station_names(tr.get("route", []))
-            pre_stops = []
-            for s in route_stops:
-                s_lower = str(s).lower()
-                if is_neustadt_hbf(s_lower): break
-                pre_stops.append(s)
-            origin = pre_stops[0] if pre_stops else tr.get("origin", "Pfälzerwald")
+            origin = get_trip_origin(tr)
+            
             arr_dt = parse_time(sched_time, delay, reference_dt)
             if arr_dt:
                 event_id = f"ARR_{train_name}_{sched_time}"
                 if event_id not in seen_events:
                     seen_events.add(event_id)
-                    start = arr_dt - datetime.timedelta(seconds=lead_arr)
-                    end = arr_dt - datetime.timedelta(seconds=lag_arr)
+                    start = arr_dt - datetime.timedelta(seconds=cfg.lead_arr)
+                    end = arr_dt - datetime.timedelta(seconds=cfg.lag_arr)
                     info = f"Ankunft: {train_name} aus {origin}"
-                    raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    raw_intervals.append(ClosureEvent(start, end, [info]))
                     zugliste.append({
-                        "Richtung": "⬅️ Ankunft (aus Westen)",
-                        "Zug": train_name,
-                        "Start/Ziel": origin,
-                        "Fahrplanzeit": arr_dt.strftime("%H:%M") + delay_str,
-                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
-                        "_start_dt": start
+                        "Richtung": "⬅️ Ankunft (aus Westen)", "Zug": train_name, "Start/Ziel": origin,
+                        "Fahrplanzeit": f'{arr_dt.strftime("%H:%M")} (+{delay})' if (use_realtime and delay>0) else arr_dt.strftime("%H:%M"),
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}", "_start_dt": start
                     })
 
-    if track_through:
+    # 3. Durchfahrten
+    if cfg.track_through_trains:
         ma_dep_data, ma_err = fetch_dbf_board("Mannheim Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
         kl_dep_data, kl_err = fetch_dbf_board("Kaiserslautern Hbf", mode="dep", use_realtime=use_realtime, is_neighbor=True)
         if ma_err: api_errors.append(ma_err)
@@ -448,11 +472,11 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
 
         for tr in ma_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"): continue
-            dest = tr.get("destination") or tr.get("direction") or ""
-            route_stops = extract_station_names(tr.get("route", []))
-            matches_west = any(kw in dest.lower() for kw in WEST_BOUND_DESTS) or \
-                           any(any(kw in str(s).lower() for kw in WEST_BOUND_DESTS) for s in route_stops)
-            if not matches_west or any(is_neustadt_hbf(str(s)) for s in route_stops) or "neustadt" in dest.lower(): continue
+            dest = get_trip_destination(tr)
+            stops = get_route_stops(tr)
+            matches_west = any(kw in normalize_station_name(dest) for kw in WEST_BOUND_DESTS) or                            any(any(kw in normalize_station_name(s) for kw in WEST_BOUND_DESTS) for s in stops)
+            if not matches_west or any(is_neustadt_hbf(s) for s in stops) or "neustadt" in normalize_station_name(dest): continue
+            
             train_name = clean_train_name(tr)
             num_match = re.search(r'\d+', train_name)
             if num_match and num_match.group(0) in neustadt_train_numbers: continue
@@ -460,31 +484,27 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
-                pass_dt = dep_dt + datetime.timedelta(minutes=transit_ma)
+                pass_dt = dep_dt + datetime.timedelta(minutes=cfg.transit_ma_min)
                 event_id = f"THROUGH_WEST_{train_name}_{sched_time}"
                 if event_id not in seen_events:
                     seen_events.add(event_id)
-                    start = pass_dt - datetime.timedelta(seconds=lead_dep)
-                    end = pass_dt + datetime.timedelta(seconds=lag_dep)
+                    start = pass_dt - datetime.timedelta(seconds=cfg.lead_dep)
+                    end = pass_dt + datetime.timedelta(seconds=cfg.lag_dep)
                     info = f"Durchfahrt: {train_name} -> {dest}"
-                    raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    raw_intervals.append(ClosureEvent(start, end, [info]))
                     zugliste.append({
-                        "Richtung": "➡️ Durchfahrt (nach Westen)",
-                        "Zug": train_name,
-                        "Start/Ziel": dest,
-                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')}{delay_str}",
-                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
-                        "_start_dt": start
+                        "Richtung": "➡️ Durchfahrt (nach Westen)", "Zug": train_name, "Start/Ziel": dest,
+                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')} (+{delay})" if (use_realtime and delay>0) else f"~{pass_dt.strftime('%H:%M')}",
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}", "_start_dt": start
                     })
 
         for tr in kl_dep_data:
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"): continue
-            dest = tr.get("destination") or tr.get("direction") or ""
-            route_stops = extract_station_names(tr.get("route", []))
-            matches_east = any(kw in dest.lower() for kw in EAST_BOUND_DESTS) or \
-                           any(any(kw in str(s).lower() for kw in EAST_BOUND_DESTS) for s in route_stops)
-            if not matches_east or any(is_neustadt_hbf(str(s)) for s in route_stops) or "neustadt" in dest.lower(): continue
+            dest = get_trip_destination(tr)
+            stops = get_route_stops(tr)
+            matches_east = any(kw in normalize_station_name(dest) for kw in EAST_BOUND_DESTS) or                            any(any(kw in normalize_station_name(s) for kw in EAST_BOUND_DESTS) for s in stops)
+            if not matches_east or any(is_neustadt_hbf(s) for s in stops) or "neustadt" in normalize_station_name(dest): continue
+            
             train_name = clean_train_name(tr)
             num_match = re.search(r'\d+', train_name)
             if num_match and num_match.group(0) in neustadt_train_numbers: continue
@@ -492,57 +512,56 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             delay = int_or_default(tr.get("delayDeparture", tr.get("delay", 0)), 0) if use_realtime else 0
             dep_dt = parse_time(sched_time, delay, reference_dt)
             if dep_dt:
-                pass_dt = dep_dt + datetime.timedelta(minutes=transit_kl)
+                pass_dt = dep_dt + datetime.timedelta(minutes=cfg.transit_kl_min)
                 event_id = f"THROUGH_EAST_{train_name}_{sched_time}"
                 if event_id not in seen_events:
                     seen_events.add(event_id)
-                    start = pass_dt - datetime.timedelta(seconds=lead_arr)
-                    end = pass_dt + datetime.timedelta(seconds=lag_arr)
+                    start = pass_dt - datetime.timedelta(seconds=cfg.lead_arr)
+                    end = pass_dt + datetime.timedelta(seconds=cfg.lag_arr)
                     info = f"Durchfahrt: {train_name} -> {dest}"
-                    raw_intervals.append((start, end, info))
-                    delay_str = f" (+{delay})" if (use_realtime and delay > 0) else ""
+                    raw_intervals.append(ClosureEvent(start, end, [info]))
                     zugliste.append({
-                        "Richtung": "⬅️ Durchfahrt (aus Westen)",
-                        "Zug": train_name,
-                        "Start/Ziel": dest,
-                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')}{delay_str}",
-                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}",
-                        "_start_dt": start
+                        "Richtung": "⬅️ Durchfahrt (aus Westen)", "Zug": train_name, "Start/Ziel": dest,
+                        "Fahrplanzeit": f"~{pass_dt.strftime('%H:%M')} (+{delay})" if (use_realtime and delay>0) else f"~{pass_dt.strftime('%H:%M')}",
+                        "Schließung": f"{start.strftime('%H:%M:%S')} - {end.strftime('%H:%M:%S')}", "_start_dt": start
                     })
 
     zugliste = sorted(zugliste, key=lambda x: x["_start_dt"])
     return raw_intervals, zugliste, api_errors
 
-def merge_intervals(intervals, min_gap_sec: int):
+def merge_intervals(intervals: List[ClosureEvent], min_gap_sec: int) -> List[ClosureEvent]:
     if not intervals: return []
-    sorted_intervals = sorted(intervals, key=lambda x: x[0])
+    sorted_intervals = sorted(intervals, key=lambda x: x.start)
     merged = []
-    curr_start, curr_end, curr_desc = sorted_intervals[0]
-    curr_trains = [curr_desc]
-    for next_start, next_end, next_desc in sorted_intervals[1:]:
-        if next_start <= curr_end + datetime.timedelta(seconds=min_gap_sec):
-            curr_end = max(curr_end, next_end)
-            curr_trains.append(next_desc)
+    curr = sorted_intervals[0]
+    
+    for nxt in sorted_intervals[1:]:
+        if nxt.start <= curr.end + datetime.timedelta(seconds=min_gap_sec):
+            # Extend current interval
+            curr.end = max(curr.end, nxt.end)
+            # Add unique trains
+            for t in nxt.trains:
+                if t not in curr.trains:
+                    curr.trains.append(t)
         else:
-            merged.append((curr_start, curr_end, curr_trains))
-            curr_start, curr_end = next_start, next_end
-            curr_trains = [next_desc]
-    merged.append((curr_start, curr_end, curr_trains))
+            merged.append(curr)
+            curr = nxt
+    merged.append(curr)
     return merged
 
-def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: list, duration_min: int = 60) -> pd.DataFrame:
+def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: List[ClosureEvent], duration_min: int = 60) -> pd.DataFrame:
     window_start = base_dt
     window_end = base_dt + datetime.timedelta(minutes=duration_min)
     events = []
     curr = window_start
-    sorted_int = sorted(merged_intervals, key=lambda x: x[0])
-    for start, end, trains in sorted_int:
-        if end <= window_start or start >= window_end: continue
-        eff_start = max(window_start, start)
-        eff_end = min(window_end, end)
+    sorted_int = sorted(merged_intervals, key=lambda x: x.start)
+    for ev in sorted_int:
+        if ev.end <= window_start or ev.start >= window_end: continue
+        eff_start = max(window_start, ev.start)
+        eff_end = min(window_end, ev.end)
         if eff_start > curr:
             events.append({"Start": curr, "Ende": eff_start, "Status": "Freie Fahrt (Offen)", "Details": "BÜ geöffnet"})
-        events.append({"Start": eff_start, "Ende": eff_end, "Status": "Schranke Geschlossen", "Details": " + ".join(trains)})
+        events.append({"Start": eff_start, "Ende": eff_end, "Status": "Schranke Geschlossen", "Details": " + ".join(ev.trains)})
         curr = max(curr, eff_end)
     if curr < window_end:
         events.append({"Start": curr, "Ende": window_end, "Status": "Freie Fahrt (Offen)", "Details": "BÜ geöffnet"})
@@ -566,46 +585,20 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
     delay = int_or_default(delay_raw, 0) if use_realtime else 0
     platform = tr.get("platform") or tr.get("scheduledPlatform") or "-"
 
-    route_stops = extract_station_names(tr.get("route", []))
-    if mode == "dep":
-        main_station = tr.get("destination") or tr.get("direction") or ""
-        if not main_station and route_stops: main_station = route_stops[-1]
-        if not main_station: main_station = "Neustadt(Weinstr)Hbf"
-
-        post_stops = []
-        found_neustadt = False
-        for s in route_stops:
-            if found_neustadt: post_stops.append(str(s))
-            elif is_neustadt_hbf(str(s)): found_neustadt = True
-        if not found_neustadt: post_stops = [str(s) for s in route_stops]
-        via_stops = " • ".join(post_stops[:5]) if post_stops else ""
-        via_label = f"über: {via_stops}" if via_stops else ""
-    else:
-        pre_stops = []
-        for s in route_stops:
-            if is_neustadt_hbf(str(s)): break
-            pre_stops.append(str(s))
-        origin = pre_stops[0] if pre_stops else tr.get("origin", "")
-        if not origin: origin = "Unbekannt"
-        main_station = origin
-        via_stops = " • ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
-        via_label = f"aus Richtung: {via_stops}" if via_stops else ""
-
+    main_station = get_trip_destination(tr) if mode == "dep" else get_trip_origin(tr)
+    via_label = get_via_stops(tr, mode)
     crosses_bu = check_crosses_steingleis(tr, mode=mode)
 
     if is_cancelled:
-        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 3px;">Fällt aus</div>'
+        time_html = f'<div class="fia-time-canc">{sched_time}</div><div class="fia-canc-text">Fällt aus</div>'
     elif use_realtime and delay > 0:
-        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.82rem; font-weight: 700; color: #ffb300; margin-top: 3px;">+{delay} min</div>'
+        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-delay">+{delay} min</div>'
     elif use_realtime:
-        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #4caf50; font-weight: 600; margin-top: 3px;">Pünktlich</div>'
+        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-ontime">Pünktlich</div>'
     else:
-        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #90caf9; margin-top: 3px;">Soll-Plan</div>'
+        time_html = f'<div class="fia-time">{sched_time}</div>'
 
-    bu_badge = '<span style="background-color: #b71c1c; color: #ffffff; padding: 2px 7px; border-radius: 3px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; letter-spacing: 0.3px;">🚦 BÜ Steingleis</span>' if crosses_bu else ''
-    is_fv = is_fernverkehr(tr)
-    badge_bg = "#ffffff" if is_fv else "#1565c0"
-    badge_fg = "#0c1e38" if is_fv else "#ffffff"
+    bu_badge = '<span class="fia-badge"><span style="font-size: 0.85rem; margin-right: 4px;">🚦</span> BÜ Steingleis</span>' if crosses_bu else ''
 
     messages = tr.get("messages", {})
     msg_list = []
@@ -620,24 +613,25 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
             if isinstance(item, dict) and "text" in item: msg_list.append(item["text"])
             elif isinstance(item, str): msg_list.append(item)
     msg_str = " | ".join(msg_list) if msg_list else ""
-    msg_html = f'<div style="color: #ffd54f; font-size: 0.78rem; font-weight: 600; margin-top: 4px;">⚠️ {msg_str}</div>' if msg_str else ''
-    via_html = f'<div style="font-size: 0.8rem; color: #9bb2d4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
+    
+    msg_html = f'<div class="fia-msg"><span class="fia-msg-icon"></span><span>{msg_str}</span></div>' if msg_str else ''
+    via_html = f'<div class="fia-via">{via_label}</div>' if via_label else ''
 
     card_html = (
-        f'<div style="background-color: #0b1a30; border-bottom: 2px solid #1c365d; border-radius: 4px; padding: 10px 14px; margin-bottom: 7px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">'
-        f'<div style="min-width: 78px; text-align: left;">{time_html}</div>'
-        f'<div style="flex-grow: 1; padding: 0 16px; overflow: hidden;">'
-        f'<div style="display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 3px;">'
-        f'<span style="background-color: {badge_bg}; color: {badge_fg}; font-size: 0.85rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 10px;">{train_name}</span>'
-        f'<span style="font-size: 1.15rem; font-weight: 700; color: #ffffff; letter-spacing: 0.2px;">{main_station}</span>'
+        f'<div class="fia-row">'
+        f'<div class="fia-time-col">{time_html}</div>'
+        f'<div class="fia-main-col">'
+        f'<div class="fia-top-line">'
+        f'<div class="fia-train">{train_name}</div>'
+        f'<div class="fia-dest">{main_station}</div>'
         f'{bu_badge}'
         f'</div>'
         f'{via_html}'
         f'{msg_html}'
         f'</div>'
-        f'<div style="min-width: 68px; text-align: center; border: 2px solid #2a528a; background-color: #061122; padding: 4px 8px; border-radius: 4px;">'
-        f'<div style="font-size: 0.65rem; color: #9bb2d4; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Gleis</div>'
-        f'<div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; line-height: 1.1;">{platform}</div>'
+        f'<div class="fia-plat-col">'
+        f'<div class="fia-plat-lbl">Gleis</div>'
+        f'<div class="fia-plat-val">{platform}</div>'
         f'</div>'
         f'</div>'
     )
@@ -661,7 +655,7 @@ with st.sidebar:
         if modus == "🔴 Live-Echtzeit":
             use_realtime = True
             cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
-            ui_interval = int(cfg_to_read.get("ui_refresh_sec", 5))
+            ui_interval = cfg_to_read.ui_refresh_sec
             auto_refresh = st.toggle(f"🔄 Auto-Refresh ({ui_interval}s)", value=True)
             plan_selected_dt = None
         else:
@@ -702,7 +696,7 @@ with st.sidebar:
 # =========================================================
 if active_page == "🚦 Monitor":
     cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
-    refresh_interval = int(cfg_to_read.get("ui_refresh_sec", 5)) if (use_realtime and auto_refresh) else None
+    refresh_interval = cfg_to_read.ui_refresh_sec if (use_realtime and auto_refresh) else None
 
     @fragment_dec(run_every=refresh_interval)
     def render_live_dashboard():
@@ -710,8 +704,7 @@ if active_page == "🚦 Monitor":
         calc_base_dt = current_time_tick if use_realtime else plan_selected_dt
 
         raw_intervals, zugliste, api_errors = get_steingleis_events(use_realtime, calc_base_dt)
-        min_gap = int(cfg_to_read.get("min_gap", 30))
-        merged = merge_intervals(raw_intervals, min_gap)
+        merged = merge_intervals(raw_intervals, cfg_to_read.min_gap)
 
         st.title("🚦 BÜ Steingleis (Neustadt/Weinstraße)")
         if not use_realtime:
@@ -728,23 +721,22 @@ if active_page == "🚦 Monitor":
         next_closure = None
         active_reasons = []
 
-        for start, end, trains in merged:
-            if start <= calc_base_dt <= end:
+        for ev in merged:
+            if ev.start <= calc_base_dt <= ev.end:
                 is_closed = True
-                current_start = start
-                current_end = end
-                active_reasons = trains
+                current_start = ev.start
+                current_end = ev.end
+                active_reasons = ev.trains
                 break
-            elif start > calc_base_dt:
-                if next_closure is None or start < next_closure[0]:
-                    next_closure = (start, end, trains)
+            elif ev.start > calc_base_dt:
+                if next_closure is None or ev.start < next_closure.start:
+                    next_closure = ev
 
-        if use_realtime and cfg_to_read.get("sound_alarm", True):
-            sound_warn_sec = int(cfg_to_read.get("sound_warn_sec", 45))
+        if use_realtime and cfg_to_read.sound_alarm:
+            sound_warn_sec = cfg_to_read.sound_warn_sec
             if next_closure:
-                s_next = next_closure[0]
-                closure_id = s_next.strftime("%Y-%m-%d %H:%M:%S")
-                sec_to_next = (s_next - calc_base_dt).total_seconds()
+                closure_id = next_closure.start.strftime("%Y-%m-%d %H:%M:%S")
+                sec_to_next = (next_closure.start - calc_base_dt).total_seconds()
                 if 0 < sec_to_next <= sound_warn_sec and st.session_state.last_alarmed_closure != closure_id:
                     st.session_state.last_alarmed_closure = closure_id
                     play_sound_cloud()
@@ -775,20 +767,19 @@ if active_page == "🚦 Monitor":
             else:
                 st.success("### ✅ SCHRANKE OFFEN (FREIE FAHRT)")
                 if next_closure:
-                    s_next, e_next, tr_next = next_closure
-                    diff_sec = int((s_next - calc_base_dt).total_seconds())
-                    st.metric("Nächste Schließung um", s_next.strftime("%H:%M:%S"), f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
-                    st.caption(f"Nächster Zug: {tr_next[0]}")
+                    diff_sec = int((next_closure.start - calc_base_dt).total_seconds())
+                    st.metric("Nächste Schließung um", next_closure.start.strftime("%H:%M:%S"), f"In ca. {diff_sec // 60}m {diff_sec % 60:02d}s")
+                    st.caption(f"Nächster Zug: {next_closure.trains[0]}")
                 else:
                     st.info("Im analysierten Zeitfenster stehen keine Schließungen an.")
 
         with col2:
             st.subheader("📋 Prognostizierte Schließphasen")
             future_rows = []
-            for s, e, trs in merged:
-                if e >= calc_base_dt:
-                    dur = int((e - s).total_seconds())
-                    future_rows.append({"Von": s.strftime("%H:%M:%S"), "Bis": e.strftime("%H:%M:%S"), "Dauer": f"{dur // 60}m {dur % 60:02d}s", "Betroffene Züge": " + ".join(trs)})
+            for ev in merged:
+                if ev.end >= calc_base_dt:
+                    dur = int((ev.end - ev.start).total_seconds())
+                    future_rows.append({"Von": ev.start.strftime("%H:%M:%S"), "Bis": ev.end.strftime("%H:%M:%S"), "Dauer": f"{dur // 60}m {dur % 60:02d}s", "Betroffene Züge": " + ".join(ev.trains)})
             if future_rows: st.dataframe(pd.DataFrame(future_rows), width="stretch", hide_index=True)
             else: st.write("Keine Schließungen im gewählten Zeitabschnitt.")
 
@@ -817,8 +808,9 @@ if active_page == "🚦 Monitor":
 # SEITE 2: BAHNHOFSTAFEL NEUSTADT (WEINSTR) HBF
 # =========================================================
 elif active_page == "🚉 Bahnhofstafel":
+    st.markdown(FIA_CSS, unsafe_allow_html=True)
     cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
-    refresh_interval = int(cfg_to_read.get("ui_refresh_sec", 5)) if (use_realtime and auto_refresh) else None
+    refresh_interval = cfg_to_read.ui_refresh_sec if (use_realtime and auto_refresh) else None
 
     @fragment_dec(run_every=refresh_interval)
     def render_station_board():
@@ -843,12 +835,10 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_dep = []
             for tr in dep_data:
-                # Züge ohne Abfahrtszeit (reine Ankünfte/Endstationen) herausfiltern
                 sched_dep = tr.get("scheduledDeparture") or tr.get("departure")
-                if not sched_dep:
-                    continue
+                if not sched_dep: continue
 
-                dest = tr.get("destination") or tr.get("direction") or ""
+                dest = get_trip_destination(tr)
                 train_name = clean_train_name(tr)
                 if filter_steingleis_dep and not check_crosses_steingleis(tr, mode="dep"): continue
                 if search_dep:
@@ -857,7 +847,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_dep.append(tr)
 
             if filtered_dep:
-                header_html = '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;"><div style="min-width: 78px;">Zeit</div><div style="flex-grow: 1; padding: 0 16px;">Zug / Fahrtziel</div><div style="min-width: 68px; text-align: center;">Gleis</div></div>'
+                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Nach / Über</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_dep: render_db_board_card(tr, mode="dep", use_realtime=use_realtime)
             else:
@@ -870,17 +860,10 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_arr = []
             for tr in arr_data:
-                # Züge ohne Ankunftszeit (z. B. Startfahrten ab Neustadt) herausfiltern
                 sched_arr = tr.get("scheduledArrival") or tr.get("arrival")
-                if not sched_arr:
-                    continue
+                if not sched_arr: continue
 
-                route_stops = extract_station_names(tr.get("route", []))
-                pre_stops = []
-                for s in route_stops:
-                    if is_neustadt_hbf(str(s)): break
-                    pre_stops.append(s)
-                origin = pre_stops[0] if pre_stops else tr.get("origin", "")
+                origin = get_trip_origin(tr)
                 train_name = clean_train_name(tr)
                 if filter_steingleis_arr and not check_crosses_steingleis(tr, mode="arr"): continue
                 if search_arr:
@@ -889,7 +872,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_arr.append(tr)
 
             if filtered_arr:
-                header_html = '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;"><div style="min-width: 78px;">Zeit</div><div style="flex-grow: 1; padding: 0 16px;">Zug / Herkunft</div><div style="min-width: 68px; text-align: center;">Gleis</div></div>'
+                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Aus Richtung</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_arr: render_db_board_card(tr, mode="arr", use_realtime=use_realtime)
             else:
@@ -915,32 +898,32 @@ elif active_page == "⚙️ Einstellungen":
         st.subheader("Vor- und Nachlaufzeiten am BÜ Steingleis")
         c1, c2 = st.columns(2)
         with c1:
-            cfg["lead_dep"] = st.slider("Schließung vor Abfahrt Hbf (Sek.)", 30, 360, int(cfg.get("lead_dep", 240)), step=10, help="Vorlaufzeit vor Planabfahrt am Hbf inklusive Signal- und Fahrstraßenstellung.")
-            cfg["lag_dep"] = st.slider("Öffnung nach Abfahrt Hbf (Sek.)", 30, 180, int(cfg.get("lag_dep", 90)), step=10, help="Zeit bis der abfahrende Zug den BÜ komplett geräumt hat.")
+            cfg.lead_dep = st.slider("Schließung vor Abfahrt Hbf (Sek.)", 30, 360, cfg.lead_dep, step=10, help="Vorlaufzeit vor Planabfahrt am Hbf inklusive Signal- und Fahrstraßenstellung.")
+            cfg.lag_dep = st.slider("Öffnung nach Abfahrt Hbf (Sek.)", 30, 180, cfg.lag_dep, step=10, help="Zeit bis der abfahrende Zug den BÜ komplett geräumt hat.")
         with c2:
-            cfg["lead_arr"] = st.slider("Schließung vor Ankunft Hbf (Sek.)", 60, 240, int(cfg.get("lead_arr", 160)), step=10, help="Zeitspanne vor Planankunft am Bahnsteig, wenn die Schranke fällt.")
-            cfg["lag_arr"] = st.slider("Öffnung vor Ankunft Hbf (Sek.)", 10, 90, int(cfg.get("lag_arr", 40)), step=5, help="Zeit vor Ankunft am Bahnsteig, zu der die Zugspitze den BÜ bereits passiert hat.")
-        cfg["min_gap"] = st.slider("Mindestöffnungslücke (Sek.)", 0, 120, int(cfg.get("min_gap", 30)), step=10, help="Ist die Zeit zwischen Öffnung und nächster Schließung kürzer als dieser Wert, bleibt die Schranke geschlossen.")
+            cfg.lead_arr = st.slider("Schließung vor Ankunft Hbf (Sek.)", 60, 240, cfg.lead_arr, step=10, help="Zeitspanne vor Planankunft am Bahnsteig, wenn die Schranke fällt.")
+            cfg.lag_arr = st.slider("Öffnung vor Ankunft Hbf (Sek.)", 10, 90, cfg.lag_arr, step=5, help="Zeit vor Ankunft am Bahnsteig, zu der die Zugspitze den BÜ bereits passiert hat.")
+        cfg.min_gap = st.slider("Mindestöffnungslücke (Sek.)", 0, 120, cfg.min_gap, step=10, help="Ist die Zeit zwischen Öffnung und nächster Schließung kürzer als dieser Wert, bleibt die Schranke geschlossen.")
 
     with tab2:
         st.subheader("Fernverkehrs-Laufzeitüberwachung (KBS 670)")
-        cfg["track_through_trains"] = st.toggle("ICE- und TGV-Durchfahrten ohne Halt in Neustadt erfassen", value=parse_bool_value(cfg.get("track_through_trains", True), True))
+        cfg.track_through_trains = st.toggle("ICE- und TGV-Durchfahrten ohne Halt in Neustadt erfassen", value=cfg.track_through_trains)
         col_ma, col_kl = st.columns(2)
-        with col_ma: cfg["transit_ma_min"] = st.slider("Fahrzeit Mannheim Hbf -> BÜ Steingleis (Min.)", 10, 25, int(cfg.get("transit_ma_min", 16)), step=1)
-        with col_kl: cfg["transit_kl_min"] = st.slider("Fahrzeit Kaiserslautern Hbf -> BÜ Steingleis (Min.)", 12, 30, int(cfg.get("transit_kl_min", 19)), step=1)
+        with col_ma: cfg.transit_ma_min = st.slider("Fahrzeit Mannheim Hbf -> BÜ Steingleis (Min.)", 10, 25, cfg.transit_ma_min, step=1)
+        with col_kl: cfg.transit_kl_min = st.slider("Fahrzeit Kaiserslautern Hbf -> BÜ Steingleis (Min.)", 12, 30, cfg.transit_kl_min, step=1)
 
     with tab3:
         st.subheader("⏱️ Taktung & API-Schonung")
         c_ui, c_api1, c_api2 = st.columns(3)
-        with c_ui: cfg["ui_refresh_sec"] = st.slider("🖥️ UI-Neuberechnung (Sek.)", 2, 30, int(cfg.get("ui_refresh_sec", 5)), step=1)
-        with c_api1: cfg["api_cache_local_sec"] = st.slider("📡 DB-Abruf Neustadt (Sek.)", 10, 120, int(cfg.get("api_cache_local_sec", 60)), step=5)
-        with c_api2: cfg["api_cache_through_sec"] = st.slider("🚄 DB-Abruf Fernverkehr (Sek.)", 15, 180, int(cfg.get("api_cache_through_sec", 120)), step=15)
+        with c_ui: cfg.ui_refresh_sec = st.slider("🖥️ UI-Neuberechnung (Sek.)", 2, 30, cfg.ui_refresh_sec, step=1)
+        with c_api1: cfg.api_cache_local_sec = st.slider("📡 DB-Abruf Neustadt (Sek.)", 10, 120, cfg.api_cache_local_sec, step=5)
+        with c_api2: cfg.api_cache_through_sec = st.slider("🚄 DB-Abruf Fernverkehr (Sek.)", 15, 180, cfg.api_cache_through_sec, step=15)
         st.markdown("---")
         st.subheader("🔔 Akustische Warnung")
         col_snd1, col_snd2 = st.columns(2)
         with col_snd1:
-            cfg["sound_alarm"] = st.toggle("Schrankengong aktivieren", value=parse_bool_value(cfg.get("sound_alarm", True), True))
-            cfg["sound_warn_sec"] = st.slider("Vorwarnzeit vor Schließung (Sek.)", 15, 120, int(cfg.get("sound_warn_sec", 45)), step=5)
+            cfg.sound_alarm = st.toggle("Schrankengong aktivieren", value=cfg.sound_alarm)
+            cfg.sound_warn_sec = st.slider("Vorwarnzeit vor Schließung (Sek.)", 15, 120, cfg.sound_warn_sec, step=5)
         with col_snd2:
             if st.button("🔊 Signalton jetzt testen"): play_sound_cloud()
 
@@ -958,7 +941,7 @@ elif active_page == "⚙️ Einstellungen":
             if st.button("💾 Dauerhaft in config.json speichern", type="primary", width="stretch"):
                 is_authorized = st.session_state.is_admin or (pwd_input and verify_admin_password(pwd_input))
                 if is_authorized:
-                    st.session_state.cfg = st.session_state.temp_cfg.copy()
+                    st.session_state.cfg = AppConfig.from_dict(st.session_state.temp_cfg.to_dict())
                     success = save_config_atomic(st.session_state.cfg)
                     if success:
                         st.session_state["config_load_error"] = False
@@ -971,7 +954,7 @@ elif active_page == "⚙️ Einstellungen":
 
         with col_reset:
             if st.button("↩️ Vorschau-Modus zurücksetzen (Neu laden)", width="stretch"):
-                st.session_state.temp_cfg = st.session_state.cfg.copy()
+                st.session_state.temp_cfg = AppConfig.from_dict(st.session_state.cfg.to_dict())
                 st.session_state.is_admin = False
                 st.info("Ihre temporären Änderungen wurden verworfen. Lade Server-Standard...")
                 st.rerun()
