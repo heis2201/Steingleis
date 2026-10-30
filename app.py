@@ -19,7 +19,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -578,8 +578,8 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
             if found_neustadt: post_stops.append(str(s))
             elif is_neustadt_hbf(str(s)): found_neustadt = True
         if not found_neustadt: post_stops = [str(s) for s in route_stops]
-        via_stops = ", ".join(post_stops[:5]) if post_stops else ""
-        via_label = f"{via_stops}" if via_stops else ""
+        via_stops = " • ".join(post_stops[:5]) if post_stops else ""
+        via_label = f"über: {via_stops}" if via_stops else ""
     else:
         pre_stops = []
         for s in route_stops:
@@ -588,25 +588,24 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
         origin = pre_stops[0] if pre_stops else tr.get("origin", "")
         if not origin: origin = "Unbekannt"
         main_station = origin
-        via_stops = ", ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
-        via_label = f"{via_stops}" if via_stops else ""
+        via_stops = " • ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
+        via_label = f"aus Richtung: {via_stops}" if via_stops else ""
 
     crosses_bu = check_crosses_steingleis(tr, mode=mode)
 
     if is_cancelled:
-        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1;">{sched_time}</div><div style="font-size: 0.85rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 2px;">Fällt aus</div>'
-        row_bg = "background-color: #0b1a30;"
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 3px;">Fällt aus</div>'
     elif use_realtime and delay > 0:
-        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1;">{sched_time}</div><div style="font-size: 0.85rem; font-weight: 700; color: #ffcc00; margin-top: 2px;">+{delay} min</div>'
-        row_bg = "background-color: #0b1a30;"
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.82rem; font-weight: 700; color: #ffb300; margin-top: 3px;">+{delay} min</div>'
     elif use_realtime:
-        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1;">{sched_time}</div><div style="font-size: 0.8rem; color: #4caf50; font-weight: 600; margin-top: 2px;">Pünktlich</div>'
-        row_bg = "background-color: #0b1a30;"
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #4caf50; font-weight: 600; margin-top: 3px;">Pünktlich</div>'
     else:
-        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1;">{sched_time}</div>'
-        row_bg = "background-color: #0b1a30;"
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #90caf9; margin-top: 3px;">Soll-Plan</div>'
 
-    bu_badge = '<span style="background-color: #d32f2f; color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 12px; letter-spacing: 0.3px; display: inline-flex; align-items: center; height: 20px;"><span style="font-size: 0.85rem; margin-right: 4px;">🚦</span> BÜ Steingleis</span>' if crosses_bu else ''
+    bu_badge = '<span style="background-color: #b71c1c; color: #ffffff; padding: 2px 7px; border-radius: 3px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; letter-spacing: 0.3px;">🚦 BÜ Steingleis</span>' if crosses_bu else ''
+    is_fv = is_fernverkehr(tr)
+    badge_bg = "#ffffff" if is_fv else "#1565c0"
+    badge_fg = "#0c1e38" if is_fv else "#ffffff"
 
     messages = tr.get("messages", {})
     msg_list = []
@@ -621,25 +620,24 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
             if isinstance(item, dict) and "text" in item: msg_list.append(item["text"])
             elif isinstance(item, str): msg_list.append(item)
     msg_str = " | ".join(msg_list) if msg_list else ""
-    
-    msg_html = f'<div style="color: #ffcc00; font-size: 0.85rem; font-weight: bold; margin-top: 4px; display: flex; align-items: flex-start;"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #ffcc00; margin-right: 6px; margin-top: 2px;"></span><span>{msg_str}</span></div>' if msg_str else ''
-    via_html = f'<div style="font-size: 0.85rem; color: #a0b6d6; line-height: 1.2; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
+    msg_html = f'<div style="color: #ffd54f; font-size: 0.78rem; font-weight: 600; margin-top: 4px;">⚠️ {msg_str}</div>' if msg_str else ''
+    via_html = f'<div style="font-size: 0.8rem; color: #9bb2d4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
 
     card_html = (
-        f'<div style="{row_bg} border-top: 1px solid #1a3258; padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: stretch; color: #ffffff; box-sizing: border-box;">'
-        f'<div style="width: 75px; flex-shrink: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start;">{time_html}</div>'
-        f'<div style="flex-grow: 1; min-width: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start; border-left: 1px solid #1a3258;">'
-        f'<div style="display: flex; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap;">'
-        f'<div style="font-size: 1.1rem; font-weight: normal; width: 65px; flex-shrink: 0;">{train_name}</div>'
-        f'<div style="font-size: 1.45rem; font-weight: bold; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{main_station}</div>'
+        f'<div style="background-color: #0b1a30; border-bottom: 2px solid #1c365d; border-radius: 4px; padding: 10px 14px; margin-bottom: 7px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">'
+        f'<div style="min-width: 78px; text-align: left;">{time_html}</div>'
+        f'<div style="flex-grow: 1; padding: 0 16px; overflow: hidden;">'
+        f'<div style="display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 3px;">'
+        f'<span style="background-color: {badge_bg}; color: {badge_fg}; font-size: 0.85rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 10px;">{train_name}</span>'
+        f'<span style="font-size: 1.15rem; font-weight: 700; color: #ffffff; letter-spacing: 0.2px;">{main_station}</span>'
         f'{bu_badge}'
         f'</div>'
         f'{via_html}'
         f'{msg_html}'
         f'</div>'
-        f'<div style="width: 65px; flex-shrink: 0; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid #1a3258;">'
-        f'<div style="font-size: 0.65rem; text-transform: uppercase; font-weight: bold; color: #a0b6d6; letter-spacing: 1px; margin-bottom: 2px;">Gleis</div>'
-        f'<div style="font-size: 1.5rem; font-weight: bold; line-height: 1;">{platform}</div>'
+        f'<div style="min-width: 68px; text-align: center; border: 2px solid #2a528a; background-color: #061122; padding: 4px 8px; border-radius: 4px;">'
+        f'<div style="font-size: 0.65rem; color: #9bb2d4; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Gleis</div>'
+        f'<div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; line-height: 1.1;">{platform}</div>'
         f'</div>'
         f'</div>'
     )
@@ -845,6 +843,11 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_dep = []
             for tr in dep_data:
+                # Züge ohne Abfahrtszeit (reine Ankünfte/Endstationen) herausfiltern
+                sched_dep = tr.get("scheduledDeparture") or tr.get("departure")
+                if not sched_dep:
+                    continue
+
                 dest = tr.get("destination") or tr.get("direction") or ""
                 train_name = clean_train_name(tr)
                 if filter_steingleis_dep and not check_crosses_steingleis(tr, mode="dep"): continue
@@ -854,7 +857,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_dep.append(tr)
 
             if filtered_dep:
-                header_html = '<div style="background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; font-weight: bold; font-size: 1.05rem;"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Nach / Über</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;"><div style="min-width: 78px;">Zeit</div><div style="flex-grow: 1; padding: 0 16px;">Zug / Fahrtziel</div><div style="min-width: 68px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_dep: render_db_board_card(tr, mode="dep", use_realtime=use_realtime)
             else:
@@ -867,6 +870,11 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_arr = []
             for tr in arr_data:
+                # Züge ohne Ankunftszeit (z. B. Startfahrten ab Neustadt) herausfiltern
+                sched_arr = tr.get("scheduledArrival") or tr.get("arrival")
+                if not sched_arr:
+                    continue
+
                 route_stops = extract_station_names(tr.get("route", []))
                 pre_stops = []
                 for s in route_stops:
@@ -881,7 +889,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_arr.append(tr)
 
             if filtered_arr:
-                header_html = '<div style="background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; font-weight: bold; font-size: 1.05rem;"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Aus Richtung</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;"><div style="min-width: 78px;">Zeit</div><div style="flex-grow: 1; padding: 0 16px;">Zug / Herkunft</div><div style="min-width: 68px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_arr: render_db_board_card(tr, mode="arr", use_realtime=use_realtime)
             else:
