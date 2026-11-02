@@ -20,7 +20,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.0"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -780,58 +780,13 @@ if active_page == "🚦 Monitor":
         
         if not df_timeline.empty:
             window_end = calc_base_dt + datetime.timedelta(minutes=60)
-            
-            # Basis-Balkendiagramm (Grün/Rot)
-            bars = (
-                alt.Chart(df_timeline)
-                .mark_bar(cornerRadius=4, height=36)
-                .encode(
-                    x=alt.X(
-                        'Start:T', 
-                        title='Uhrzeit (5-Minuten-Takt)', 
-                        scale=alt.Scale(domain=[calc_base_dt, window_end]), 
-                        axis=alt.Axis(
-                            format='%H:%M', 
-                            tickCount=12, 
-                            labelAngle=0, 
-                            labelFontSize=11, 
-                            grid=False,
-                            orient='bottom'
-                        )
-                    ),
-                    x2='Ende:T', 
-                    color=alt.Color(
-                        'Status:N', 
-                        scale=alt.Scale(
-                            domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'], 
-                            range=['#22c55e', '#ef4444']
-                        ), 
-                        legend=alt.Legend(title=None, orient='top', labelFontSize=12)
-                    ),
-                    tooltip=[
-                        alt.Tooltip('Status:N', title='Status'), 
-                        alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'), 
-                        alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'), 
-                        alt.Tooltip('Details:N', title='Details / Züge')
-                    ]
-                )
+            chart = (
+                alt.Chart(df_timeline).mark_bar(cornerRadius=4, height=36).encode(
+                    x=alt.X('Start:T', title='Uhrzeit (5-Minuten-Takt)', scale=alt.Scale(domain=[calc_base_dt, window_end]), axis=alt.Axis(format='%H:%M', tickCount=12, labelAngle=0, labelFontSize=11, grid=True, gridDash=[2, 2], orient='bottom')),
+                    x2='Ende:T', color=alt.Color('Status:N', scale=alt.Scale(domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'], range=['#22c55e', '#ef4444']), legend=alt.Legend(title=None, orient='top', labelFontSize=12)),
+                    tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'), alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'), alt.Tooltip('Details:N', title='Details / Züge')]
+                ).properties(height=125)
             )
-
-            # Vertikale Trennstriche im 5-Minuten-Takt generieren
-            grid_ticks = [calc_base_dt + datetime.timedelta(minutes=m) for m in range(5, 60, 5)]
-            df_grid = pd.DataFrame({"time": grid_ticks})
-
-            grid_lines = (
-                alt.Chart(df_grid)
-                .mark_rule(
-                    color="#ffffff",       
-                    strokeWidth=2,
-                )
-                .encode(x="time:T")
-            )
-
-            # Layering: Linien ÜBER die Balken legen
-            chart = (bars + grid_lines).properties(height=125)
             st.altair_chart(chart, width="stretch")
 
         with st.expander(f"🔍 Alle erfassten Züge am Steingleis ({len(zugliste)} Fahrten)"):
