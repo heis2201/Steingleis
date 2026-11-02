@@ -20,7 +20,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -148,9 +148,7 @@ if url_admin_token and verify_admin_password(url_admin_token):
     st.session_state.is_admin = True
 
 if "temp_cfg" not in st.session_state:
-    # We copy the config object using a new instance from dict to ensure separation
     st.session_state.temp_cfg = AppConfig.from_dict(st.session_state.cfg.to_dict())
-
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -182,33 +180,6 @@ def get_http_session() -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
-
-# ---------------------------------------------------------
-# BAHNHOFSTAFEL CSS
-# ---------------------------------------------------------
-FIA_CSS = """
-<style>
-.fia-header { background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; font-weight: bold; font-size: 1.05rem; }
-.fia-row { background-color: #0b1a30; border-top: 1px solid #1a3258; padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; display: flex; align-items: stretch; color: #ffffff; box-sizing: border-box; }
-.fia-time-col { width: 75px; flex-shrink: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start; }
-.fia-time { font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; }
-.fia-time-canc { font-size: 1.35rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1; }
-.fia-delay { font-size: 0.85rem; font-weight: 700; color: #ffcc00; margin-top: 2px; }
-.fia-ontime { font-size: 0.8rem; color: #4caf50; font-weight: 600; margin-top: 2px; }
-.fia-canc-text { font-size: 0.85rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 2px; }
-.fia-main-col { flex-grow: 1; min-width: 0; padding: 6px 12px; display: flex; flex-direction: column; border-left: 1px solid #1a3258; }
-.fia-top-line { display: flex; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap; }
-.fia-train { font-size: 1.1rem; font-weight: normal; width: 65px; flex-shrink: 0; }
-.fia-dest { font-size: 1.45rem; font-weight: bold; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fia-badge { background-color: #d32f2f; color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 12px; display: inline-flex; align-items: center; height: 20px; }
-.fia-via { font-size: 0.85rem; color: #a0b6d6; line-height: 1.2; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fia-msg { color: #ffcc00; font-size: 0.85rem; font-weight: bold; margin-top: 4px; display: flex; align-items: flex-start; }
-.fia-msg-icon { display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #ffcc00; margin-right: 6px; margin-top: 2px; }
-.fia-plat-col { width: 65px; flex-shrink: 0; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid #1a3258; }
-.fia-plat-lbl { font-size: 0.65rem; text-transform: uppercase; font-weight: bold; color: #a0b6d6; letter-spacing: 1px; margin-bottom: 2px; }
-.fia-plat-val { font-size: 1.5rem; font-weight: bold; line-height: 1; }
-</style>
-"""
 
 # ---------------------------------------------------------
 # CLIENT-SEITIGE LIVE-UHR & SANDBOX AUDIO
@@ -537,9 +508,7 @@ def merge_intervals(intervals: List[ClosureEvent], min_gap_sec: int) -> List[Clo
     
     for nxt in sorted_intervals[1:]:
         if nxt.start <= curr.end + datetime.timedelta(seconds=min_gap_sec):
-            # Extend current interval
             curr.end = max(curr.end, nxt.end)
-            # Add unique trains
             for t in nxt.trains:
                 if t not in curr.trains:
                     curr.trains.append(t)
@@ -568,7 +537,7 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: List[
     return pd.DataFrame(events)
 
 # ---------------------------------------------------------
-# BAHNHOFSTAFEL HELPER IM DB-LOOK (FIA)
+# BAHNHOFSTAFEL HELPER IM DB-LOOK (FIA) - ORIGINAL v0.2.3
 # ---------------------------------------------------------
 def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True):
     is_cancelled = bool(tr.get("is_cancelled") or tr.get("isCancelled"))
@@ -590,15 +559,19 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
     crosses_bu = check_crosses_steingleis(tr, mode=mode)
 
     if is_cancelled:
-        time_html = f'<div class="fia-time-canc">{sched_time}</div><div class="fia-canc-text">Fällt aus</div>'
+        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1; white-space: nowrap;">{sched_time}</div><div style="font-size: 0.85rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 2px; white-space: nowrap;">Fällt aus</div>'
+        row_bg = "background-color: #0b1a30;"
     elif use_realtime and delay > 0:
-        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-delay">+{delay} min</div>'
+        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; white-space: nowrap;">{sched_time}</div><div style="font-size: 0.85rem; font-weight: 700; color: #ffcc00; margin-top: 2px; white-space: nowrap;">+{delay} min</div>'
+        row_bg = "background-color: #0b1a30;"
     elif use_realtime:
-        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-ontime">Pünktlich</div>'
+        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; white-space: nowrap;">{sched_time}</div><div style="font-size: 0.8rem; color: #4caf50; font-weight: 600; margin-top: 2px; white-space: nowrap;">Pünktlich</div>'
+        row_bg = "background-color: #0b1a30;"
     else:
-        time_html = f'<div class="fia-time">{sched_time}</div>'
+        time_html = f'<div style="font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; white-space: nowrap;">{sched_time}</div>'
+        row_bg = "background-color: #0b1a30;"
 
-    bu_badge = '<span class="fia-badge"><span style="font-size: 0.85rem; margin-right: 4px;">🚦</span> BÜ Steingleis</span>' if crosses_bu else ''
+    bu_badge = '<span style="background-color: #d32f2f; color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 12px; letter-spacing: 0.3px; display: inline-flex; align-items: center; height: 20px; white-space: nowrap;"><span style="font-size: 0.85rem; margin-right: 4px;">🚦</span> BÜ Steingleis</span>' if crosses_bu else ''
 
     messages = tr.get("messages", {})
     msg_list = []
@@ -614,24 +587,24 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
             elif isinstance(item, str): msg_list.append(item)
     msg_str = " | ".join(msg_list) if msg_list else ""
     
-    msg_html = f'<div class="fia-msg"><span class="fia-msg-icon"></span><span>{msg_str}</span></div>' if msg_str else ''
-    via_html = f'<div class="fia-via">{via_label}</div>' if via_label else ''
+    msg_html = f'<div style="color: #ffcc00; font-size: 0.85rem; font-weight: bold; margin-top: 4px; display: flex; align-items: flex-start;"><span style="display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #ffcc00; margin-right: 6px; margin-top: 2px; flex-shrink: 0;"></span><span>{msg_str}</span></div>' if msg_str else ''
+    via_html = f'<div style="font-size: 0.85rem; color: #a0b6d6; line-height: 1.2; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
 
     card_html = (
-        f'<div class="fia-row">'
-        f'<div class="fia-time-col">{time_html}</div>'
-        f'<div class="fia-main-col">'
-        f'<div class="fia-top-line">'
-        f'<div class="fia-train">{train_name}</div>'
-        f'<div class="fia-dest">{main_station}</div>'
+        f'<div style="{row_bg} border-top: 1px solid #1a3258; padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: stretch; color: #ffffff; box-sizing: border-box;">'
+        f'<div style="width: 84px; min-width: 84px; flex-shrink: 0; padding: 6px 10px; display: flex; flex-direction: column; justify-content: flex-start; white-space: nowrap;">{time_html}</div>'
+        f'<div style="flex-grow: 1; min-width: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start; border-left: 1px solid #1a3258;">'
+        f'<div style="display: flex; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap;">'
+        f'<div style="font-size: 1.1rem; font-weight: normal; width: 65px; flex-shrink: 0;">{train_name}</div>'
+        f'<div style="font-size: 1.45rem; font-weight: bold; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{main_station}</div>'
         f'{bu_badge}'
         f'</div>'
         f'{via_html}'
         f'{msg_html}'
         f'</div>'
-        f'<div class="fia-plat-col">'
-        f'<div class="fia-plat-lbl">Gleis</div>'
-        f'<div class="fia-plat-val">{platform}</div>'
+        f'<div style="width: 65px; flex-shrink: 0; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid #1a3258;">'
+        f'<div style="font-size: 0.65rem; text-transform: uppercase; font-weight: bold; color: #a0b6d6; letter-spacing: 1px; margin-bottom: 2px;">Gleis</div>'
+        f'<div style="font-size: 1.5rem; font-weight: bold; line-height: 1;">{platform}</div>'
         f'</div>'
         f'</div>'
     )
@@ -808,7 +781,6 @@ if active_page == "🚦 Monitor":
 # SEITE 2: BAHNHOFSTAFEL NEUSTADT (WEINSTR) HBF
 # =========================================================
 elif active_page == "🚉 Bahnhofstafel":
-    st.markdown(FIA_CSS, unsafe_allow_html=True)
     cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
     refresh_interval = cfg_to_read.ui_refresh_sec if (use_realtime and auto_refresh) else None
 
@@ -847,7 +819,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_dep.append(tr)
 
             if filtered_dep:
-                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Nach / Über</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = '<div style="background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; font-weight: bold; font-size: 1.05rem;"><div style="width: 84px; min-width: 84px; flex-shrink: 0; padding: 2px 10px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Nach / Über</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_dep: render_db_board_card(tr, mode="dep", use_realtime=use_realtime)
             else:
@@ -872,7 +844,7 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_arr.append(tr)
 
             if filtered_arr:
-                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Aus Richtung</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = '<div style="background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; font-weight: bold; font-size: 1.05rem;"><div style="width: 84px; min-width: 84px; flex-shrink: 0; padding: 2px 10px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Aus Richtung</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_arr: render_db_board_card(tr, mode="arr", use_realtime=use_realtime)
             else:
