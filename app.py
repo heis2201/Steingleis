@@ -19,7 +19,7 @@ import altair as alt
 # ---------------------------------------------------------
 # ANWENDUNGS-VERSION & GRUNDKONFIGURATION
 # ---------------------------------------------------------
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.2.1"
 
 st.set_page_config(
     page_title=f"BÜ Steingleis Monitor v{APP_VERSION}",
@@ -798,53 +798,13 @@ if active_page == "🚦 Monitor":
         
         if not df_timeline.empty:
             window_end = calc_base_dt + datetime.timedelta(minutes=60)
-            
-            # Basis-Balkendiagramm (Grün/Rot)
-            bars = alt.Chart(df_timeline).mark_bar(cornerRadius=4, height=36).encode(
-                x=alt.X('Start:T', title='Uhrzeit (5-Minuten-Takt)', scale=alt.Scale(domain=[calc_base_dt, window_end]), axis=alt.Axis(format='%H:%M', tickCount=12, labelAngle=0, labelFontSize=11, grid=True, gridDash=[2, 2], orient='bottom')),
-                x2='Ende:T',
-                color=alt.Color('Status:N', scale=alt.Scale(domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'], range=['#22c55e', '#ef4444']), legend=alt.Legend(title=None, orient='top', labelFontSize=12)),
-                tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'), alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'), alt.Tooltip('Details:N', title='Details / Züge')]
+            chart = (
+                alt.Chart(df_timeline).mark_bar(cornerRadius=4, height=36).encode(
+                    x=alt.X('Start:T', title='Uhrzeit (5-Minuten-Takt)', scale=alt.Scale(domain=[calc_base_dt, window_end]), axis=alt.Axis(format='%H:%M', tickCount=12, labelAngle=0, labelFontSize=11, grid=True, gridDash=[2, 2], orient='bottom')),
+                    x2='Ende:T', color=alt.Color('Status:N', scale=alt.Scale(domain=['Freie Fahrt (Offen)', 'Schranke Geschlossen'], range=['#22c55e', '#ef4444']), legend=alt.Legend(title=None, orient='top', labelFontSize=12)),
+                    tooltip=[alt.Tooltip('Status:N', title='Status'), alt.Tooltip('Start:T', format='%H:%M:%S', title='Von'), alt.Tooltip('Ende:T', format='%H:%M:%S', title='Bis'), alt.Tooltip('Details:N', title='Details / Züge')]
+                ).properties(height=125)
             )
-
-            # Text-Label für Zugnamen (nur in roten Blöcken)
-            df_closed = df_timeline[df_timeline["Status"] == "Schranke Geschlossen"].copy()
-            if not df_closed.empty:
-                # Extrahiere kurze Zugnummern aus "Details" (z.B. "S2 + RE1")
-                def extract_short_names(detail_str):
-                    parts = str(detail_str).split(" + ")
-                    names = []
-                    for p in parts:
-                        m = re.match(r'^(?:Durchfahrt|Abfahrt|Ankunft):\s*([A-Za-z0-9]+)', p.strip())
-                        if m: names.append(m.group(1))
-                    return " + ".join(names) if names else ""
-                
-                df_closed["ShortName"] = df_closed["Details"].apply(extract_short_names)
-                
-                text_labels = alt.Chart(df_closed).mark_text(
-                    align='center', baseline='middle', color='white', fontSize=11, fontWeight='bold', clip=True
-                ).encode(
-                    x=alt.X('Start:T'),
-                    x2=alt.X2('Ende:T'),
-                    text='ShortName:N'
-                )
-                
-                # "JETZT"-Linie (Aktuelle Uhrzeit)
-                now_df = pd.DataFrame([{"now": calc_base_dt}])
-                now_line = alt.Chart(now_df).mark_rule(
-                    color="#ffcc00", strokeWidth=2, strokeDash=[4, 4]
-                ).encode(
-                    x="now:T"
-                )
-                
-                chart = (bars + text_labels + now_line).properties(height=125)
-            else:
-                now_df = pd.DataFrame([{"now": calc_base_dt}])
-                now_line = alt.Chart(now_df).mark_rule(
-                    color="#ffcc00", strokeWidth=2, strokeDash=[4, 4]
-                ).encode(x="now:T")
-                chart = (bars + now_line).properties(height=125)
-
             st.altair_chart(chart, width="stretch")
 
         with st.expander(f"🔍 Alle erfassten Züge am Steingleis ({len(zugliste)} Fahrten)"):
