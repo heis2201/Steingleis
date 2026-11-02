@@ -825,9 +825,7 @@ if active_page == "🚦 Monitor":
                 alt.Chart(df_grid)
                 .mark_rule(
                     color="#ffffff",       
-                    opacity=0.35,          
-                    strokeWidth=1,         
-                    strokeDash=[3, 3]      
+                    strokeWidth=2,
                 )
                 .encode(x="time:T")
             )
