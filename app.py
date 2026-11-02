@@ -148,9 +148,7 @@ if url_admin_token and verify_admin_password(url_admin_token):
     st.session_state.is_admin = True
 
 if "temp_cfg" not in st.session_state:
-    # We copy the config object using a new instance from dict to ensure separation
     st.session_state.temp_cfg = AppConfig.from_dict(st.session_state.cfg.to_dict())
-
 
 WEST_CORRIDOR_KEYWORDS = [
     "lambrecht", "neidenfels", "weidenthal", "frankenstein", "hochspeyer",
@@ -182,33 +180,6 @@ def get_http_session() -> requests.Session:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
-
-# ---------------------------------------------------------
-# BAHNHOFSTAFEL CSS
-# ---------------------------------------------------------
-FIA_CSS = """
-<style>
-.fia-header { background-color: #ffcc00; color: #0b1a30; padding: 4px 0; display: flex; align-items: stretch; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; font-weight: bold; font-size: 1.05rem; }
-.fia-row { background-color: #0b1a30; border-top: 1px solid #1a3258; padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; display: flex; align-items: stretch; color: #ffffff; box-sizing: border-box; }
-.fia-time-col { width: 75px; flex-shrink: 0; padding: 6px 12px; display: flex; flex-direction: column; justify-content: flex-start; }
-.fia-time { font-size: 1.35rem; font-weight: 700; color: #ffffff; line-height: 1; }
-.fia-time-canc { font-size: 1.35rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1; }
-.fia-delay { font-size: 0.85rem; font-weight: 700; color: #ffcc00; margin-top: 2px; }
-.fia-ontime { font-size: 0.8rem; color: #4caf50; font-weight: 600; margin-top: 2px; }
-.fia-canc-text { font-size: 0.85rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 2px; }
-.fia-main-col { flex-grow: 1; min-width: 0; padding: 6px 12px; display: flex; flex-direction: column; border-left: 1px solid #1a3258; }
-.fia-top-line { display: flex; align-items: baseline; margin-bottom: 2px; flex-wrap: wrap; }
-.fia-train { font-size: 1.1rem; font-weight: normal; width: 65px; flex-shrink: 0; }
-.fia-dest { font-size: 1.45rem; font-weight: bold; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fia-badge { background-color: #d32f2f; color: #ffffff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 12px; display: inline-flex; align-items: center; height: 20px; }
-.fia-via { font-size: 0.85rem; color: #a0b6d6; line-height: 1.2; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fia-msg { color: #ffcc00; font-size: 0.85rem; font-weight: bold; margin-top: 4px; display: flex; align-items: flex-start; }
-.fia-msg-icon { display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #ffcc00; margin-right: 6px; margin-top: 2px; }
-.fia-plat-col { width: 65px; flex-shrink: 0; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid #1a3258; }
-.fia-plat-lbl { font-size: 0.65rem; text-transform: uppercase; font-weight: bold; color: #a0b6d6; letter-spacing: 1px; margin-bottom: 2px; }
-.fia-plat-val { font-size: 1.5rem; font-weight: bold; line-height: 1; }
-</style>
-"""
 
 # ---------------------------------------------------------
 # CLIENT-SEITIGE LIVE-UHR & SANDBOX AUDIO
@@ -326,13 +297,13 @@ def get_via_stops(tr: dict, mode: str) -> str:
             if found: post_stops.append(str(s))
             elif is_neustadt_hbf(s): found = True
         if not found: post_stops = [str(s) for s in stops]
-        return ", ".join(post_stops[:5])
+        return " • ".join(post_stops[:5])
     else:
         pre_stops = []
         for s in stops:
             if is_neustadt_hbf(s): break
             pre_stops.append(str(s))
-        return ", ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
+        return " • ".join(pre_stops[1:6]) if len(pre_stops) > 1 else ""
 
 def parse_time(time_val, delay_min: int = 0, reference_dt: datetime.datetime = None) -> Optional[datetime.datetime]:
     if not time_val: return None
@@ -474,7 +445,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"): continue
             dest = get_trip_destination(tr)
             stops = get_route_stops(tr)
-            matches_west = any(kw in normalize_station_name(dest) for kw in WEST_BOUND_DESTS) or                            any(any(kw in normalize_station_name(s) for kw in WEST_BOUND_DESTS) for s in stops)
+            matches_west = any(kw in normalize_station_name(dest) for kw in WEST_BOUND_DESTS) or \
+                           any(any(kw in normalize_station_name(s) for kw in WEST_BOUND_DESTS) for s in stops)
             if not matches_west or any(is_neustadt_hbf(s) for s in stops) or "neustadt" in normalize_station_name(dest): continue
             
             train_name = clean_train_name(tr)
@@ -502,7 +474,8 @@ def get_steingleis_events(use_realtime: bool, reference_dt: datetime.datetime) -
             if not is_fernverkehr(tr) or tr.get("is_cancelled") or tr.get("isCancelled"): continue
             dest = get_trip_destination(tr)
             stops = get_route_stops(tr)
-            matches_east = any(kw in normalize_station_name(dest) for kw in EAST_BOUND_DESTS) or                            any(any(kw in normalize_station_name(s) for kw in EAST_BOUND_DESTS) for s in stops)
+            matches_east = any(kw in normalize_station_name(dest) for kw in EAST_BOUND_DESTS) or \
+                           any(any(kw in normalize_station_name(s) for kw in EAST_BOUND_DESTS) for s in stops)
             if not matches_east or any(is_neustadt_hbf(s) for s in stops) or "neustadt" in normalize_station_name(dest): continue
             
             train_name = clean_train_name(tr)
@@ -537,9 +510,7 @@ def merge_intervals(intervals: List[ClosureEvent], min_gap_sec: int) -> List[Clo
     
     for nxt in sorted_intervals[1:]:
         if nxt.start <= curr.end + datetime.timedelta(seconds=min_gap_sec):
-            # Extend current interval
             curr.end = max(curr.end, nxt.end)
-            # Add unique trains
             for t in nxt.trains:
                 if t not in curr.trains:
                     curr.trains.append(t)
@@ -568,9 +539,10 @@ def build_timeline_dataframe(base_dt: datetime.datetime, merged_intervals: List[
     return pd.DataFrame(events)
 
 # ---------------------------------------------------------
-# BAHNHOFSTAFEL HELPER IM DB-LOOK (FIA)
+# BAHNHOFSTAFEL HELPER IM BEWÄHRTEN KACHEL-LOOK (ORIGINAL)
 # ---------------------------------------------------------
 def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True):
+    """Rendert einen Zug als authentische DB-Fahrgastinformations-Kachel (dunkelblau)."""
     is_cancelled = bool(tr.get("is_cancelled") or tr.get("isCancelled"))
     train_name = clean_train_name(tr)
     
@@ -581,57 +553,76 @@ def render_db_board_card(tr: dict, mode: str = "dep", use_realtime: bool = True)
         sched_time = tr.get("scheduledArrival") or tr.get("arrival") or tr.get("time") or tr.get("scheduledTime") or "--:--"
         delay_raw = tr.get("delayArrival")
         
-    if delay_raw is None: delay_raw = tr.get("delay", 0)
+    if delay_raw is None:
+        delay_raw = tr.get("delay", 0)
     delay = int_or_default(delay_raw, 0) if use_realtime else 0
     platform = tr.get("platform") or tr.get("scheduledPlatform") or "-"
 
+    # Station und Zwischenhalte
     main_station = get_trip_destination(tr) if mode == "dep" else get_trip_origin(tr)
-    via_label = get_via_stops(tr, mode)
+    via_stops = get_via_stops(tr, mode)
+    if mode == "dep":
+        via_label = f"über: {via_stops}" if via_stops else ""
+    else:
+        via_label = f"aus Richtung: {via_stops}" if via_stops else ""
+
+    # BÜ Steingleis Relevanz
     crosses_bu = check_crosses_steingleis(tr, mode=mode)
 
+    # Zeit- und Verspätungsspalte
     if is_cancelled:
-        time_html = f'<div class="fia-time-canc">{sched_time}</div><div class="fia-canc-text">Fällt aus</div>'
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ff5252; text-decoration: line-through; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; font-weight: 700; color: #ff5252; text-transform: uppercase; margin-top: 3px;">Fällt aus</div>'
     elif use_realtime and delay > 0:
-        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-delay">+{delay} min</div>'
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.82rem; font-weight: 700; color: #ffb300; margin-top: 3px;">+{delay} min</div>'
     elif use_realtime:
-        time_html = f'<div class="fia-time">{sched_time}</div><div class="fia-ontime">Pünktlich</div>'
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #4caf50; font-weight: 600; margin-top: 3px;">Pünktlich</div>'
     else:
-        time_html = f'<div class="fia-time">{sched_time}</div>'
+        time_html = f'<div style="font-size: 1.25rem; font-weight: 700; color: #ffffff; line-height: 1.1;">{sched_time}</div><div style="font-size: 0.75rem; color: #90caf9; margin-top: 3px;">Soll-Plan</div>'
 
-    bu_badge = '<span class="fia-badge"><span style="font-size: 0.85rem; margin-right: 4px;">🚦</span> BÜ Steingleis</span>' if crosses_bu else ''
+    # Badge BÜ Steingleis
+    bu_badge = '<span style="background-color: #b71c1c; color: #ffffff; padding: 2px 7px; border-radius: 3px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; letter-spacing: 0.3px;">🚦 BÜ Steingleis</span>' if crosses_bu else ''
 
+    # Zuggattungs-Badge Styling (ICE weiß/grau, Nahverkehr blau)
+    is_fv = is_fernverkehr(tr)
+    badge_bg = "#ffffff" if is_fv else "#1565c0"
+    badge_fg = "#0c1e38" if is_fv else "#ffffff"
+
+    # Meldungen extrahieren
     messages = tr.get("messages", {})
     msg_list = []
     if isinstance(messages, dict):
         for m in messages.values():
             if isinstance(m, list):
                 for item in m:
-                    if isinstance(item, dict) and "text" in item: msg_list.append(item["text"])
-                    elif isinstance(item, str): msg_list.append(item)
+                    if isinstance(item, dict) and "text" in item:
+                        msg_list.append(item["text"])
+                    elif isinstance(item, str):
+                        msg_list.append(item)
     elif isinstance(messages, list):
         for item in messages:
-            if isinstance(item, dict) and "text" in item: msg_list.append(item["text"])
-            elif isinstance(item, str): msg_list.append(item)
+            if isinstance(item, dict) and "text" in item:
+                msg_list.append(item["text"])
+            elif isinstance(item, str):
+                msg_list.append(item)
     msg_str = " | ".join(msg_list) if msg_list else ""
-    
-    msg_html = f'<div class="fia-msg"><span class="fia-msg-icon"></span><span>{msg_str}</span></div>' if msg_str else ''
-    via_html = f'<div class="fia-via">{via_label}</div>' if via_label else ''
+    msg_html = f'<div style="color: #ffd54f; font-size: 0.78rem; font-weight: 600; margin-top: 4px;">⚠️ {msg_str}</div>' if msg_str else ''
+    via_html = f'<div style="font-size: 0.8rem; color: #9bb2d4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{via_label}</div>' if via_label else ''
 
     card_html = (
-        f'<div class="fia-row">'
-        f'<div class="fia-time-col">{time_html}</div>'
-        f'<div class="fia-main-col">'
-        f'<div class="fia-top-line">'
-        f'<div class="fia-train">{train_name}</div>'
-        f'<div class="fia-dest">{main_station}</div>'
+        f'<div style="background-color: #0b1a30; border-bottom: 2px solid #1c365d; border-radius: 4px; padding: 10px 14px; margin-bottom: 7px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.25);">'
+        f'<div style="min-width: 78px; text-align: left;">{time_html}</div>'
+        f'<div style="flex-grow: 1; padding: 0 16px; overflow: hidden;">'
+        f'<div style="display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 3px;">'
+        f'<span style="background-color: {badge_bg}; color: {badge_fg}; font-size: 0.85rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; margin-right: 10px;">{train_name}</span>'
+        f'<span style="font-size: 1.15rem; font-weight: 700; color: #ffffff; letter-spacing: 0.2px;">{main_station}</span>'
         f'{bu_badge}'
         f'</div>'
         f'{via_html}'
         f'{msg_html}'
         f'</div>'
-        f'<div class="fia-plat-col">'
-        f'<div class="fia-plat-lbl">Gleis</div>'
-        f'<div class="fia-plat-val">{platform}</div>'
+        f'<div style="min-width: 68px; text-align: center; border: 2px solid #2a528a; background-color: #061122; padding: 4px 8px; border-radius: 4px;">'
+        f'<div style="font-size: 0.65rem; color: #9bb2d4; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Gleis</div>'
+        f'<div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; line-height: 1.1;">{platform}</div>'
         f'</div>'
         f'</div>'
     )
@@ -808,7 +799,6 @@ if active_page == "🚦 Monitor":
 # SEITE 2: BAHNHOFSTAFEL NEUSTADT (WEINSTR) HBF
 # =========================================================
 elif active_page == "🚉 Bahnhofstafel":
-    st.markdown(FIA_CSS, unsafe_allow_html=True)
     cfg_to_read = st.session_state.cfg if st.session_state.is_admin else st.session_state.temp_cfg
     refresh_interval = cfg_to_read.ui_refresh_sec if (use_realtime and auto_refresh) else None
 
@@ -835,10 +825,15 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_dep = []
             for tr in dep_data:
+                # 1. Züge ohne Abfahrtszeit oder mit Endstation Neustadt herausfiltern
                 sched_dep = tr.get("scheduledDeparture") or tr.get("departure")
-                if not sched_dep: continue
+                if not sched_dep or sched_dep == "--:--":
+                    continue
 
                 dest = get_trip_destination(tr)
+                if is_neustadt_hbf(dest):
+                    continue
+
                 train_name = clean_train_name(tr)
                 if filter_steingleis_dep and not check_crosses_steingleis(tr, mode="dep"): continue
                 if search_dep:
@@ -847,7 +842,13 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_dep.append(tr)
 
             if filtered_dep:
-                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Nach / Über</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = (
+                    '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;">'
+                    '<div style="min-width: 78px;">Zeit</div>'
+                    '<div style="flex-grow: 1; padding: 0 16px;">Zug / Fahrtziel</div>'
+                    '<div style="min-width: 68px; text-align: center;">Gleis</div>'
+                    '</div>'
+                )
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_dep: render_db_board_card(tr, mode="dep", use_realtime=use_realtime)
             else:
@@ -860,10 +861,15 @@ elif active_page == "🚉 Bahnhofstafel":
 
             filtered_arr = []
             for tr in arr_data:
+                # 1. Züge ohne Ankunftszeit oder mit Start in Neustadt herausfiltern
                 sched_arr = tr.get("scheduledArrival") or tr.get("arrival")
-                if not sched_arr: continue
+                if not sched_arr or sched_arr == "--:--":
+                    continue
 
                 origin = get_trip_origin(tr)
+                if is_neustadt_hbf(origin):
+                    continue
+
                 train_name = clean_train_name(tr)
                 if filter_steingleis_arr and not check_crosses_steingleis(tr, mode="arr"): continue
                 if search_arr:
@@ -872,7 +878,13 @@ elif active_page == "🚉 Bahnhofstafel":
                 filtered_arr.append(tr)
 
             if filtered_arr:
-                header_html = '<div class="fia-header"><div style="width: 75px; flex-shrink: 0; padding: 2px 12px;">Zeit</div><div style="flex-grow: 1; min-width: 0; padding: 2px 12px; display: flex;"><div style="width: 65px; flex-shrink: 0;">Zug</div><div>Aus Richtung</div></div><div style="width: 65px; flex-shrink: 0; padding: 2px 4px; text-align: center;">Gleis</div></div>'
+                header_html = (
+                    '<div style="background-color: #061122; border-bottom: 2px solid #2a528a; padding: 6px 14px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; font-size: 0.75rem; font-weight: 700; color: #9bb2d4; text-transform: uppercase; letter-spacing: 0.5px;">'
+                    '<div style="min-width: 78px;">Zeit</div>'
+                    '<div style="flex-grow: 1; padding: 0 16px;">Zug / Herkunft</div>'
+                    '<div style="min-width: 68px; text-align: center;">Gleis</div>'
+                    '</div>'
+                )
                 st.markdown(clean_html(header_html), unsafe_allow_html=True)
                 for tr in filtered_arr: render_db_board_card(tr, mode="arr", use_realtime=use_realtime)
             else:
